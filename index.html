@@ -77,6 +77,7 @@ body{
 .fld.chk input{width:auto;height:auto;padding:0;margin:0}
 .w-xs{width:64px}.w-s{width:86px}.w-m{width:124px}.w-l{width:152px}.w-xl{width:186px}
 input,select,textarea{background:var(--panel-2);color:var(--ink);border:1px solid var(--line);border-radius:6px;font:inherit}
+option,optgroup{background-color:var(--panel);color:var(--ink)}   /* 深色下弹出层文字 */
 input:focus,select:focus,textarea:focus{outline:2px solid var(--accent);outline-offset:-1px;border-color:var(--accent)}
 
 /* ---------- 工作区 ---------- */
@@ -110,7 +111,7 @@ input:focus,select:focus,textarea:focus{outline:2px solid var(--accent);outline-
 .ldmbar select{height:28px;padding:3px 7px;font-size:12px;flex:1 1 160px;min-width:140px}
 .ldmbar .cfgsel{display:inline-flex;align-items:center;height:28px;border:1px solid var(--line);border-radius:6px;background:var(--panel-2);overflow:hidden;flex:0 0 auto}
 .ldmbar .cfgsel > span{font-size:9.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--ink-3);padding:0 8px;border-right:1px solid var(--line);height:100%;display:flex;align-items:center;white-space:nowrap}
-.ldmbar .cfgsel select{border:0;border-radius:0;height:26px;flex:0 0 auto;min-width:120px;width:auto;background:transparent}
+.ldmbar .cfgsel select{border:0;border-radius:0;height:26px;flex:0 0 auto;min-width:120px;width:auto;background:var(--panel-2)}
 table.lde td.zoo input{color:var(--accent)}
 table.lde td.zoo{box-shadow:inset 2px 0 0 var(--accent)}
 /* ---- 关于：二级页 ---- */
@@ -127,6 +128,17 @@ table.lde td.zoo{box-shadow:inset 2px 0 0 var(--accent)}
 .sheetbody b{color:var(--ink);font-weight:600}
 .sheetbody code{font-family:"IBM Plex Mono",ui-monospace,monospace;font-size:11.5px;
   background:var(--panel-3);padding:1px 4px;border-radius:3px;color:var(--ink-2)}
+.cmpbody{max-width:1680px;margin:0 auto;padding:12px 14px 64px;display:flex;flex-direction:column;gap:10px}
+.cmpbar{margin:0}
+.cmpgrid{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:10px;align-items:start}
+@media(max-width:1000px){.cmpgrid{grid-template-columns:minmax(0,1fr)}}
+.cmptag{display:inline-flex;align-items:center;justify-content:center;width:17px;height:17px;border-radius:5px;
+  font-size:11px;font-weight:700;margin-right:7px;color:#fff}
+.cmptag.a{background:var(--f2)} .cmptag.b{background:var(--v2)}
+.cmpstat{display:flex;flex-wrap:wrap;gap:0 16px;padding:7px 12px;border-top:1px solid var(--line-2);
+  font-family:"IBM Plex Mono",ui-monospace,monospace;font-size:11px;color:var(--ink-2)}
+.cmpstat b{color:var(--ink-3);font-weight:500;margin-right:5px}
+.cmpstat i{font-style:normal;color:var(--ink)}
 @media(max-width:560px){.sheetbody{padding:12px 12px 48px}.sheetbar{padding:9px 12px;gap:8px}.sheetbar h2{font-size:13px}.sheetnote{display:none}}
 .hdrsel{display:flex;align-items:center;gap:4px;font-size:10.5px;color:var(--ink-3);margin-right:8px;white-space:nowrap}
 .hdrsel select{height:22px;padding:1px 4px;font-size:11px;font-family:"IBM Plex Mono",ui-monospace,monospace}
@@ -221,6 +233,7 @@ table.data tbody tr:hover{background:var(--panel-2)}
     <h1 class="brand">镜头 MTF 仿真台</h1>
     <span class="sub">LDM 表格直接编辑 · Layout 与 MTF 实时重算 · 全部计算在本机浏览器完成</span>
     <span class="spacer"></span>
+    <button class="iconbtn" id="cmpBtn" type="button">对比两颗</button>
     <button class="iconbtn" id="aboutBtn" type="button">关于</button>
     <button class="iconbtn" id="themeBtn" type="button" aria-label="切换亮暗主题">◐ 主题</button>
   </div>
@@ -229,7 +242,8 @@ table.data tbody tr:hover{background:var(--panel-2)}
   <div class="sysbar">
     <label class="fld"><span>孔径定义</span>
       <select id="apmode" class="w-l">
-        <option value="fno" selected>像方 F/#</option>
+        <option value="fno" selected>像方工作 F/#（CODE V）</option>
+        <option value="fnoinf">F/# = EFL/入瞳（Zemax）</option>
         <option value="epd">入瞳直径 mm</option>
         <option value="stop">由光阑半孔径浮动</option>
       </select></label>
@@ -277,6 +291,7 @@ table.data tbody tr:hover{background:var(--panel-2)}
       <header><h2>镜头数据管理器</h2><span class="grow"></span><span class="badge" id="surfBadge">—</span></header>
       <div class="ldmbar">
         <div class="ldmrow">
+          <label class="cfgsel"><span>品牌</span><select id="brand" aria-label="镜头品牌"></select></label>
           <select id="ex" aria-label="载入镜头"></select>
           <label class="cfgsel" id="cfgWrap" style="display:none"><span>结构</span><select id="cfg" aria-label="多重结构 / 变焦位置"></select></label>
           <button class="btn" id="impBtn" type="button">导入 .seq / .zmx</button>
@@ -381,6 +396,97 @@ table.data tbody tr:hover{background:var(--panel-2)}
   </section>
 
 
+
+  <!-- ============ 双镜头对比（二级页） ============ -->
+  <div class="sheet" id="cmpSheet" hidden>
+    <div class="sheetbar">
+      <button class="iconbtn" id="cmpBack" type="button">← 返回</button>
+      <h2>双镜头对比 · MTF vs 视场</h2><span class="grow"></span>
+      <span class="sheetnote">两边共用同一套光谱 / 频率 / 算法，只有镜头不同</span>
+    </div>
+    <div class="cmpbody">
+
+      <div class="sysbar cmpbar">
+        <label class="fld"><span>光谱</span>
+          <select id="cmpWl" class="w-l">
+            <option value="" selected>各自文件自带</option>
+            <option value="p1">d 单色（587.6）</option>
+            <option value="p3">F d C 等权</option>
+            <option value="p5">可见光 5 线（10/27/29/23/11）</option>
+            <option value="vis">VIS Weighted（C–g，5500 K 黑体）</option>
+            <option value="leica">Leica Weighted（455–644）</option>
+            <option value="jp">日本厂商光谱权重</option>
+          </select></label>
+        <label class="fld"><span>频率 cyc/mm</span><input class="w-m" id="cmpFreqs" type="text" value="10, 30"></label>
+        <label class="fld"><span>MTF 算法</span>
+          <select id="cmpMode" class="w-s"><option value="diff" selected>衍射</option><option value="geo">几何</option></select></label>
+        <label class="fld"><span>曲线</span>
+          <select id="cmpTS" class="w-s">
+            <option value="ts" selected>子午 T + 弧矢 S</option>
+            <option value="t">仅子午 T</option><option value="s">仅弧矢 S</option>
+            <option value="avg">(T+S)/2</option>
+          </select></label>
+        <label class="fld"><span>横轴</span>
+          <select id="cmpX" class="w-s"><option value="h" selected>实像高 mm</option><option value="n">归一化视场</option></select></label>
+        <label class="fld"><span>瞳面网格</span>
+          <select id="cmpGrid" class="w-s"><option value="12">12²</option><option value="16">16²</option>
+            <option value="24" selected>24²</option><option value="32">32²</option></select></label>
+        <label class="fld"><span>MTF 视场点</span>
+          <select id="cmpN" class="w-s"><option value="9">9</option><option value="11" selected>11</option>
+            <option value="15">15</option><option value="21">21</option></select></label>
+        <div class="fld chk"><label><input id="cmpFocus" type="checkbox"> 各自最佳对焦</label></div>
+      </div>
+
+      <div class="cmpgrid">
+      <section class="card">
+        <header><h2><span class="cmptag a">A</span>镜头 A</h2><span class="grow"></span><span class="badge" id="cmpLayBadgeA">—</span></header>
+        <div class="ldmbar">
+          <div class="ldmrow">
+            <label class="cfgsel"><span>品牌</span><select id="cmpBrandA" aria-label="镜头 A 品牌"></select></label>
+            <select id="cmpExA" aria-label="镜头 A"></select>
+            <label class="cfgsel" id="cmpCfgWrapA" style="display:none"><span>结构</span><select id="cmpCfgA"></select></label>
+          </div>
+        </div>
+        <div class="body">
+          <svg id="cmpLayA" class="plot" role="img" aria-label="镜头 A 光路图"></svg>
+          <div class="legend" id="cmpLayLegendA"></div>
+        </div>
+        <div class="cmpstat" id="cmpStatA"></div>
+      </section>
+      <section class="card">
+        <header><h2><span class="cmptag b">B</span>镜头 B</h2><span class="grow"></span><span class="badge" id="cmpLayBadgeB">—</span></header>
+        <div class="ldmbar">
+          <div class="ldmrow">
+            <label class="cfgsel"><span>品牌</span><select id="cmpBrandB" aria-label="镜头 B 品牌"></select></label>
+            <select id="cmpExB" aria-label="镜头 B"></select>
+            <label class="cfgsel" id="cmpCfgWrapB" style="display:none"><span>结构</span><select id="cmpCfgB"></select></label>
+          </div>
+        </div>
+        <div class="body">
+          <svg id="cmpLayB" class="plot" role="img" aria-label="镜头 B 光路图"></svg>
+          <div class="legend" id="cmpLayLegendB"></div>
+        </div>
+        <div class="cmpstat" id="cmpStatB"></div>
+      </section>
+      </div>
+
+      <section class="card">
+        <header><h2>MTF vs 视场 · 叠加</h2><span class="grow"></span><span class="badge" id="cmpBadge">—</span></header>
+        <div class="body">
+          <svg id="cmpMtf" class="plot" role="img" aria-label="两颗镜头的 MTF vs 视场对比"></svg>
+          <div class="legend" id="cmpLegend"></div>
+        </div>
+        <div class="body" style="border-top:1px solid var(--line-2)">
+          <p class="note"><b>A 用冷色、B 用暖色</b>，同一颗镜头里颜色深浅区分频率；<b>实线 = 子午 T，虚线 = 弧矢 S</b>（与主页面同一约定）。
+          两边共用光谱、频率、算法、瞳面网格和视场点数，<b>孔径 / 视场定义 / 渐晕仍各自按文件走</b>——这是镜头本身的规格，强行统一反而不是那颗镜头了。
+          横轴选「实像高」时两颗按各自的毫米数画，画幅不同的镜头这么比才有意义；选「归一化视场」则各自压到 0~1，比的是相对边缘表现。
+          <b>各自最佳对焦</b>勾上后，每颗镜头各自解一次轴上最小 RMS 离焦再算 MTF——文件后焦有零头时（比如取整过的空气间隔）用它比才公平。</p>
+        </div>
+      </section>
+
+    </div>
+  </div>
+
   <!-- ============ 关于（二级页） ============ -->
   <div class="sheet" id="aboutSheet" hidden>
     <div class="sheetbar">
@@ -397,7 +503,7 @@ table.data tbody tr:hover{background:var(--panel-2)}
           <b>衍射模式</b>（默认）：按渐晕因子把通光瞳建模成缩放+偏心的等效椭圆瞳，瞳内均匀取样、由实光线光程算波前 OPD，OTF = 圆孔径解析面积因子（截止频率按各方向瞳半宽缩放）× 波前相位平均 ⟨e<sup>iΔφ</sup>⟩，多波长按通量加权合成复数 OTF。剪切取样在瞳缘用「按可用角点归一化的双线性」（不再退回最近邻——最近邻会把最多半格的坐标误差当成波前差，在 PV 大的视场上折算成几个弧度的相位噪声，与 32² 网格收敛值的最大偏差因此从 0.030 降到 0.011）。<br>
           <b>几何模式</b>：对像面光斑直接做傅里叶变换取模，不含衍射，轴上会系统性偏高。</p></section>
 
-<section><h3>球差 · 场曲 · 畸变</h3><p>三条都用实光线算，不走赛得系数。<b>纵向球差</b>：轴上光线在归一化瞳高 ρ 处与光轴的交点减去像面 z——曲线底端不归零，那段偏移就是轴向色差。<b>像散场曲</b>：以主光线为中心在光阑面取 ±2% 瞳半径的一对光线（科丁顿构型的实光线版），子午取两条的交点、弧矢取 x=0 的位置，都换算成到像面的轴向距离；实线 = 子午 T、虚线 = 弧矢 S，与上面 MTF 图同一约定（注意 Zemax 的场曲图默认是反过来的：实线 S、虚线 T）。<b>畸变</b>：主光线实像高与<b>近轴主光线在像面上的高度</b>之比，不是 f·tanθ——像面不在近轴焦点上时两者会差几个千分之一，Cooke 三片就差 0.47%。参考光线不受通光孔径限制，否则大视场上整条会消失。</p></section>
+<section><h3>球差 · 场曲 · 畸变</h3><p>三条都用实光线算，不走赛得系数。<b>纵向球差</b>：轴上光线在归一化瞳高 ρ 处与光轴的交点减去像面 z——曲线底端不归零，那段偏移就是轴向色差。<b>像散场曲</b>：以主光线为中心在光阑面取 ±2% 瞳半径的一对光线（科丁顿构型的实光线版），子午取两条的交点、弧矢取 x=0 的位置，都换算成到像面的轴向距离；实线 = 子午 T、虚线 = 弧矢 S，与上面 MTF 图同一约定（注意 Zemax 的场曲图默认是反过来的：实线 S、虚线 T）。<b>畸变</b>：主光线实像高与<b>近轴主光线在像面上的高度</b>之比，不是 f·tanθ——像面不在近轴焦点上时两者会差几个千分之一，老式三片结构能差到 0.47%。参考光线不受通光孔径限制，否则大视场上整条会消失。</p></section>
 
 <section><h3>光线扇形（Ray Fan）</h3><p>页面最下面那张，布局照 CODE V 的 <code>RIM</code>：每个等分像高视场一行，左格子午（Δy 随子午瞳坐标）、右格弧矢（Δx 随弧矢瞳坐标），最上面是最大视场，默认 6 个视场点。横轴一律取<b>整个入瞳</b>的归一化坐标 −1…+1，曲线只画在该视场未渐晕的那一段——边缘视场短一截就是渐晕，和 CODE V 的图一个道理。纵向零点取该视场<b>主光线</b>在主波长下的落点，各波长上下错开即倍率色差。所有格子共用一个对称刻度：官方宏 <code>cvquickrim.seq</code> 的做法就是先扫一遍全部视场 × 波长的最大像差、再用 <code>SSI</code> 给每个变焦位统一设定，这里照搬。轴上那一行的子午扇实测严格奇对称（21 个采样点无一例外），是这条链路的一个硬校验。</p></section>
 
