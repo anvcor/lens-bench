@@ -1,0 +1,454 @@
+<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>镜头 MTF 仿真台</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+<style>
+:root{
+  --bg:#EDF0F3; --panel:#FFFFFF; --panel-2:#F4F7F9; --panel-3:#E7EDF0; --row-alt:#EDF4F6;
+  --ink:#111A20; --ink-2:#4E606C; --ink-3:#7F909B;
+  --line:#D6DEE4; --line-2:#E6ECEF;
+  --accent:#0C6D7E; --accent-soft:#DCEDF0;
+  --glass:#DBEAEE; --glass-2:#CADEE4; --glass-stroke:#78A0AB;
+  --f1:#45B0BC; --f2:#0F7285; --f3:#073846; --f4:#5D6E22;
+  --v1:#D69426; --v2:#A8471A; --v3:#5E1E11;
+  --warn:#7E5310; --warn-bg:#FAF1DC; --warn-line:#E4CE9C;
+  --shadow:0 1px 2px rgba(17,26,32,.05), 0 8px 24px -14px rgba(17,26,32,.22);
+  --r:9px;
+  color-scheme:light;
+}
+@media (prefers-color-scheme:dark){
+  :root:not([data-theme="light"]){
+    --bg:#0E1114; --panel:#171B1F; --panel-2:#1C2126; --panel-3:#232A30; --row-alt:#1B2126;
+    --ink:#E6EDF1; --ink-2:#9CAAB4; --ink-3:#6D7B86;
+    --line:#29323A; --line-2:#20272D;
+    --accent:#4FBACB; --accent-soft:#14313A;
+    --glass:#1D3038; --glass-2:#24404A; --glass-stroke:#4F7D89;
+    --f1:#1B7285; --f2:#3FAFC2; --f3:#9EE9F1; --f4:#B6D98A;
+    --v1:#B06A2E; --v2:#E08A3C; --v3:#F7C271;
+    --warn:#E2B36A; --warn-bg:#241E12; --warn-line:#40361F;
+    --shadow:0 1px 2px rgba(0,0,0,.4), 0 8px 24px -14px rgba(0,0,0,.7);
+    color-scheme:dark;
+  }
+}
+:root[data-theme="dark"]{
+  --bg:#0E1114; --panel:#171B1F; --panel-2:#1C2126; --panel-3:#232A30; --row-alt:#1B2126;
+  --ink:#E6EDF1; --ink-2:#9CAAB4; --ink-3:#6D7B86;
+  --line:#29323A; --line-2:#20272D;
+  --accent:#4FBACB; --accent-soft:#14313A;
+  --glass:#1D3038; --glass-2:#24404A; --glass-stroke:#4F7D89;
+  --f1:#1B7285; --f2:#3FAFC2; --f3:#9EE9F1; --f4:#B6D98A;
+  --v1:#B06A2E; --v2:#E08A3C; --v3:#F7C271;
+  --warn:#E2B36A; --warn-bg:#241E12; --warn-line:#40361F;
+  --shadow:0 1px 2px rgba(0,0,0,.4), 0 8px 24px -14px rgba(0,0,0,.7);
+  color-scheme:dark;
+}
+
+*{box-sizing:border-box}
+body{
+  margin:0; background:var(--bg); color:var(--ink);
+  font-family:Archivo,"Helvetica Neue","PingFang SC","Microsoft YaHei",system-ui,sans-serif;
+  font-size:14px; line-height:1.5; -webkit-text-size-adjust:100%;
+}
+.mono,table.lde,.status{font-family:"IBM Plex Mono",ui-monospace,"SFMono-Regular",Menlo,Consolas,monospace;font-variant-numeric:tabular-nums}
+
+.app{max-width:2200px;margin:0 auto;padding:12px 14px 0;display:flex;flex-direction:column;gap:10px}
+
+/* ---------- header ---------- */
+.top{display:flex;flex-wrap:wrap;align-items:baseline;gap:8px 14px}
+.brand{font-size:18px;font-weight:700;letter-spacing:-.01em;margin:0}
+.sub{color:var(--ink-3);font-size:12px}
+.top .spacer{flex:1 1 auto}
+.iconbtn{border:1px solid var(--line);background:var(--panel);color:var(--ink-2);
+  border-radius:6px;padding:4px 10px;font:inherit;font-size:12px;cursor:pointer}
+.iconbtn:hover{border-color:var(--accent);color:var(--accent)}
+.iconbtn:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+
+/* ---------- 系统数据条 ---------- */
+.sysbar{display:flex;flex-wrap:wrap;gap:8px 10px;align-items:flex-end;padding:9px 12px;
+  background:var(--panel);border:1px solid var(--line);border-radius:var(--r);box-shadow:var(--shadow)}
+.fld{display:flex;flex-direction:column;gap:3px}
+.fld > span{font-size:9.5px;letter-spacing:.06em;text-transform:uppercase;color:var(--ink-3);white-space:nowrap}
+.fld input,.fld select{padding:4px 7px;font-size:12.5px;height:28px;
+  font-family:"IBM Plex Mono",monospace;font-variant-numeric:tabular-nums}
+.fld.chk{justify-content:flex-end}
+.fld.chk label{display:flex;align-items:center;gap:6px;height:28px;padding:0 9px;font-size:12.5px;
+  border:1px solid var(--line);border-radius:6px;background:var(--panel-2);cursor:pointer;white-space:nowrap}
+.fld.chk input{width:auto;height:auto;padding:0;margin:0}
+.w-xs{width:64px}.w-s{width:86px}.w-m{width:124px}.w-l{width:152px}.w-xl{width:186px}
+input,select,textarea{background:var(--panel-2);color:var(--ink);border:1px solid var(--line);border-radius:6px;font:inherit}
+input:focus,select:focus,textarea:focus{outline:2px solid var(--accent);outline-offset:-1px;border-color:var(--accent)}
+
+/* ---------- 工作区 ---------- */
+.work{display:grid;grid-template-columns:minmax(0,4fr) minmax(0,6fr);gap:10px;align-items:start}
+.leftcol{display:flex;flex-direction:column;gap:10px;min-width:0}
+.leftcol > *{flex:0 0 auto}
+@media(max-width:1040px){.work{grid-template-columns:minmax(0,1fr)}}
+
+.card{background:var(--panel);border:1px solid var(--line);border-radius:var(--r);
+  box-shadow:var(--shadow);overflow:hidden;display:flex;flex-direction:column;min-width:0}
+.card > header{display:flex;align-items:center;gap:8px;padding:7px 11px;flex:0 0 auto;
+  border-bottom:1px solid var(--line-2);background:var(--panel-2)}
+.card > header h2{margin:0;font-size:11.5px;font-weight:600;letter-spacing:.05em;text-transform:uppercase;color:var(--ink-2)}
+.card > header .grow{flex:1}
+.badge{font-family:"IBM Plex Mono",monospace;font-variant-numeric:tabular-nums;font-size:10.5px;
+  padding:2px 7px;border-radius:5px;background:var(--panel-3);color:var(--ink-2);white-space:nowrap}
+.badge.live{background:var(--accent-soft);color:var(--accent)}
+
+/* ---------- LDM 表 ---------- */
+.ldmbar{display:flex;flex-direction:column;gap:6px;padding:8px 10px;border-bottom:1px solid var(--line-2);flex:0 0 auto}
+.ldmrow{display:flex;flex-wrap:wrap;align-items:center;gap:6px}
+.btngrp{display:inline-flex;gap:0;border:1px solid var(--line);border-radius:6px;overflow:hidden}
+.btngrp .btn{border:0;border-radius:0;border-right:1px solid var(--line)}
+.btngrp .btn:last-child{border-right:0}
+.btngrp .btn:hover{background:var(--accent-soft)}
+.btn{border:1px solid var(--line);background:var(--panel-2);color:var(--ink);
+  border-radius:6px;padding:0 10px;height:28px;font:inherit;font-size:12px;cursor:pointer;white-space:nowrap}
+.btn:hover{border-color:var(--accent);color:var(--accent)}
+.btn:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.btn[disabled]{opacity:.45;cursor:default}
+.ldmbar select{height:28px;padding:3px 7px;font-size:12px;flex:1 1 160px;min-width:140px}
+.ldmbar .cfgsel{display:inline-flex;align-items:center;height:28px;border:1px solid var(--line);border-radius:6px;background:var(--panel-2);overflow:hidden;flex:0 0 auto}
+.ldmbar .cfgsel > span{font-size:9.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--ink-3);padding:0 8px;border-right:1px solid var(--line);height:100%;display:flex;align-items:center;white-space:nowrap}
+.ldmbar .cfgsel select{border:0;border-radius:0;height:26px;flex:0 0 auto;min-width:120px;width:auto;background:transparent}
+table.lde td.zoo input{color:var(--accent)}
+table.lde td.zoo{box-shadow:inset 2px 0 0 var(--accent)}
+/* ---- 关于：二级页 ---- */
+.sheet{position:fixed;inset:0;z-index:60;background:var(--bg);overflow-y:auto;overscroll-behavior:contain}
+.sheetbar{position:sticky;top:0;z-index:2;display:flex;align-items:center;gap:12px;
+  padding:11px 18px;background:var(--panel);border-bottom:1px solid var(--line)}
+.sheetbar h2{margin:0;font-size:14px;font-weight:600;color:var(--ink)}
+.sheetnote{font-size:11px;color:var(--ink-3)}
+.sheetbody{max-width:920px;margin:0 auto;padding:18px 18px 64px}
+.sheetbody section{padding:14px 0;border-bottom:1px solid var(--line-2)}
+.sheetbody section:last-child{border-bottom:0}
+.sheetbody h3{margin:0 0 7px;font-size:13px;font-weight:600;color:var(--accent);letter-spacing:.02em}
+.sheetbody p{margin:0;font-size:12.5px;line-height:1.75;color:var(--ink-2)}
+.sheetbody b{color:var(--ink);font-weight:600}
+.sheetbody code{font-family:"IBM Plex Mono",ui-monospace,monospace;font-size:11.5px;
+  background:var(--panel-3);padding:1px 4px;border-radius:3px;color:var(--ink-2)}
+@media(max-width:560px){.sheetbody{padding:12px 12px 48px}.sheetbar{padding:9px 12px;gap:8px}.sheetbar h2{font-size:13px}.sheetnote{display:none}}
+.hdrsel{display:flex;align-items:center;gap:4px;font-size:10.5px;color:var(--ink-3);margin-right:8px;white-space:nowrap}
+.hdrsel select{height:22px;padding:1px 4px;font-size:11px;font-family:"IBM Plex Mono",ui-monospace,monospace}
+
+.ldmscroll{overflow-x:auto;flex:1 1 auto}          /* 只横向滚，纵向随内容展开 */
+table.lde{border-collapse:separate;border-spacing:0;width:100%;font-size:11.5px}
+table.lde th{z-index:3;background:var(--panel-3);color:var(--ink-2);
+  border-bottom:1px solid var(--line);border-right:1px solid var(--line-2);
+  padding:5px 6px;font-weight:600;font-size:10px;letter-spacing:.03em;text-align:center;white-space:nowrap}
+table.lde td{border-bottom:1px solid var(--line-2);border-right:1px solid var(--line-2);padding:0;height:25px}
+table.lde tbody tr:nth-child(even){background:var(--row-alt)}
+table.lde tbody tr.sel{box-shadow:inset 0 0 0 2px var(--accent)}
+table.lde tbody tr.fixed td{color:var(--ink-3);background:var(--panel-3)}
+table.lde td.num{text-align:center;font-size:10.5px;color:var(--ink-2);white-space:nowrap;padding:0 6px;
+  cursor:pointer;user-select:none;position:sticky;left:0;z-index:2;background:var(--panel-2)}
+table.lde tbody tr:nth-child(even) td.num{background:var(--panel-3)}
+table.lde td.num.stop{color:var(--accent);font-weight:600}
+table.lde td.num:hover{color:var(--accent)}
+table.lde td.ro{padding:0 7px;text-align:right;color:var(--ink-3);font-size:11.5px}
+table.lde td.typ{text-align:center;font-size:10.5px;color:var(--ink-3);white-space:nowrap;padding:0 6px}
+table.lde input{width:100%;height:24px;border:0;background:transparent;padding:0 7px;
+  font:inherit;font-size:11.5px;font-variant-numeric:tabular-nums;text-align:right;border-radius:0}
+table.lde td.txt input{text-align:left}
+table.lde thead th:first-child{position:sticky;left:0;z-index:4;background:var(--panel-3)}
+table.lde .ac0{border-left:1px solid var(--line)}
+table.lde th.ac{color:var(--ink-3)}
+table.lde input:focus{outline:2px solid var(--accent);outline-offset:-2px;background:var(--panel)}
+table.lde input::placeholder{color:var(--ink-3);opacity:.55}
+table.lde td.clr{padding:0 5px}
+table.lde input[type=color]{width:100%;height:17px;padding:0;border:1px solid var(--line);
+  border-radius:3px;background:none;cursor:pointer;vertical-align:middle}
+table.lde input[type=color]::-webkit-color-swatch-wrapper{padding:1px}
+table.lde input[type=color]::-webkit-color-swatch{border:0;border-radius:2px}
+table.lde td.pri{text-align:center}
+table.lde td.pri input{width:auto;height:auto;accent-color:var(--accent);cursor:pointer}
+table.wl td.num{cursor:default}
+.wlscroll{overflow-x:auto}
+
+/* ---------- 视图列 ---------- */
+.viewcol{display:flex;flex-direction:column;gap:10px;min-width:0}
+.viewcol > *{flex:0 0 auto}   /* 不允许被压扁 */
+.plotwrap{width:100%;overflow-x:auto}
+svg.plot{display:block;width:100%;height:auto}
+@media(max-width:760px){svg.plot#mtf{min-width:560px}svg.plot#layout{min-width:480px}}
+.legend{display:flex;flex-wrap:wrap;gap:5px 14px;align-items:center;padding:0 11px 10px;font-size:11px;color:var(--ink-2)}
+.lg{display:inline-flex;align-items:center;gap:6px}
+.sw{width:15px;height:2.5px;border-radius:2px;flex:0 0 auto}
+.conv{color:var(--ink-3)}
+.hoverbar{min-height:24px;padding:0 11px 9px;font-family:"IBM Plex Mono",monospace;
+  font-size:11px;color:var(--ink-2);font-variant-numeric:tabular-nums}
+.hoverbar b{color:var(--ink);font-weight:600}
+
+/* ---------- 数据表 / 提示 ---------- */
+details.tbl{border-top:1px solid var(--line-2)}
+details.tbl summary{padding:8px 11px;cursor:pointer;font-size:11.5px;color:var(--ink-2);font-weight:500;list-style:none}
+details.tbl summary::-webkit-details-marker{display:none}
+details.tbl summary::before{content:"▸ ";color:var(--ink-3)}
+details.tbl[open] summary::before{content:"▾ "}
+.tblwrap{overflow-x:auto;padding:0 11px 11px}
+table.data{border-collapse:collapse;width:100%;font-family:"IBM Plex Mono",monospace;font-size:11px;font-variant-numeric:tabular-nums}
+table.data th,table.data td{padding:3px 8px;text-align:right;white-space:nowrap;border-bottom:1px solid var(--line-2)}
+table.data th{color:var(--ink-3);font-weight:500;background:var(--panel)}
+table.data th:first-child,table.data td:first-child{text-align:left}
+table.data tbody tr:hover{background:var(--panel-2)}
+
+.msg{margin:8px 10px 10px;padding:7px 10px;border-radius:6px;font-size:11.5px;line-height:1.5;
+     background:var(--warn-bg);border:1px solid var(--warn-line);color:var(--warn)}
+.msg ul{margin:3px 0 0;padding-left:16px}
+.note{font-size:11.5px;color:var(--ink-3);line-height:1.6;margin:0}
+.note b{color:var(--ink-2)}
+.card .body{padding:11px}
+
+/* ---------- 状态栏 ---------- */
+.statuswrap{position:sticky;bottom:0;z-index:20;margin-top:10px;
+  background:var(--bg);padding-bottom:10px}
+.status{display:flex;align-items:center;gap:0;overflow-x:auto;font-size:11.5px;
+  background:var(--panel);border:1px solid var(--line);border-radius:var(--r);box-shadow:var(--shadow)}
+.status .it{padding:7px 13px;border-right:1px solid var(--line-2);white-space:nowrap;flex:0 0 auto}
+.status .it b{color:var(--ink-3);font-weight:500;font-size:10px;letter-spacing:.05em;margin-right:7px;text-transform:uppercase}
+.status .it i{font-style:normal;color:var(--ink);font-weight:500}
+.status .it.key i{color:var(--accent)}
+.status .grow{flex:1 1 auto;border:0}
+.status .it.perf{border-right:0;border-left:1px solid var(--line-2);color:var(--ink-2)}
+
+@media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
+</style>
+
+</head><body>
+<div class="app">
+
+  <div class="top">
+    <h1 class="brand">镜头 MTF 仿真台</h1>
+    <span class="sub">LDM 表格直接编辑 · Layout 与 MTF 实时重算 · 全部计算在本机浏览器完成</span>
+    <span class="spacer"></span>
+    <button class="iconbtn" id="aboutBtn" type="button">关于</button>
+    <button class="iconbtn" id="themeBtn" type="button" aria-label="切换亮暗主题">◐ 主题</button>
+  </div>
+
+  <!-- ============ 系统数据条 ============ -->
+  <div class="sysbar">
+    <label class="fld"><span>孔径定义</span>
+      <select id="apmode" class="w-l">
+        <option value="fno" selected>像方 F/#</option>
+        <option value="epd">入瞳直径 mm</option>
+        <option value="stop">由光阑半孔径浮动</option>
+      </select></label>
+    <label class="fld"><span id="fnoLabel">F/#</span><input class="w-s" id="fno" type="number" step="0.1" min="0.1" value="5"></label>
+    <label class="fld"><span>视场定义</span>
+      <select id="fmode" class="w-s"><option value="angle" selected>角度 °</option><option value="height">实像高 mm</option></select></label>
+    <label class="fld"><span id="fovLabel">半视场 °</span><input class="w-s" id="fov" type="number" step="0.5" min="0" value="20"></label>
+    <label class="fld"><span>离焦 mm</span><input class="w-s" id="defoc" type="number" step="0.01" value="0"></label>
+    <label class="fld"><span title="物面到第 1 面顶点的距离，写 inf 或留空为无限远">物距 MM</span><input class="w-s" id="objd" type="text" value="inf"></label>
+    <label class="fld"><span>频率 cyc/mm</span><input class="w-m" id="freqs" type="text" value="10, 30, 80"></label>
+    <label class="fld"><span>MTF 算法</span>
+      <select id="mtfmode" class="w-s"><option value="diff" selected>衍射</option><option value="geo">几何</option></select></label>
+    <div class="fld chk"><label><input id="aim" type="checkbox"> 光线瞄准光阑</label></div>
+    <label class="fld"><span>Layout 着色</span>
+      <select id="colorby" class="w-s"><option value="field" selected>按视场</option><option value="wvl">按波长</option></select></label>
+    <label class="fld"><span>瞳面网格</span>
+      <select id="ngrid" class="w-s">
+        <option value="12">12²</option><option value="16">16²</option>
+        <option value="24">24²</option><option value="32" selected>32²</option><option value="48">48²</option>
+      </select></label>
+    <label class="fld"><span>MTF 视场点</span>
+      <select id="nfield" class="w-s">
+        <option value="6">6</option><option value="9">9</option>
+        <option value="11">11</option><option value="15" selected>15</option>
+        <option value="21">21</option><option value="31">31</option>
+      </select></label>
+    <label class="fld"><span>图示视场</span>
+      <select id="nfviz" class="w-s">
+        <option value="1">1</option><option value="3" selected>3</option>
+        <option value="5">5</option><option value="7">7</option><option value="9">9</option>
+      </select></label>
+    <label class="fld"><span>每视场光线</span>
+      <select id="nviz" class="w-s">
+        <option value="3" selected>3</option><option value="5">5</option>
+        <option value="7">7</option><option value="11">11</option>
+      </select></label>
+  </div>
+
+  <!-- ============ 工作区 ============ -->
+  <div class="work">
+
+    <!-- ---- 左：镜头数据管理器 + 波长 ---- -->
+    <div class="leftcol">
+    <section class="card">
+      <header><h2>镜头数据管理器</h2><span class="grow"></span><span class="badge" id="surfBadge">—</span></header>
+      <div class="ldmbar">
+        <div class="ldmrow">
+          <select id="ex" aria-label="载入镜头"></select>
+          <label class="cfgsel" id="cfgWrap" style="display:none"><span>结构</span><select id="cfg" aria-label="多重结构 / 变焦位置"></select></label>
+          <button class="btn" id="impBtn" type="button">导入 .seq / .zmx</button>
+          <input type="file" id="impFile" accept=".seq,.SEQ,.zmx,.ZMX,.len,.txt" style="display:none">
+        </div>
+        <div class="ldmrow">
+          <div class="btngrp">
+            <button class="btn" id="insBtn" type="button">插入面</button>
+            <button class="btn" id="delBtn" type="button">删除面</button>
+            <button class="btn" id="stopBtn" type="button">设为光阑</button>
+            <button class="btn" id="focusBtn" type="button">最佳对焦</button>
+          </div>
+          <span class="grow"></span>
+          <div class="btngrp">
+            <button class="btn" id="undoBtn" type="button" title="撤销上一步（Ctrl+Z）" disabled>撤销</button>
+            <button class="btn" id="redoBtn" type="button" title="重做（Ctrl+Shift+Z / Ctrl+Y）" disabled>重做</button>
+            <button class="btn" id="resetBtn" type="button" title="回到刚载入示例 / 刚导入 .seq 时的状态" disabled>恢复初始</button>
+          </div>
+        </div>
+      </div>
+      <div class="ldmscroll">
+        <table class="lde" id="lde">
+          <thead id="ldeHead"></thead>
+          <tbody id="ldeBody"></tbody>
+        </table>
+      </div>
+      <div id="msgs"></div>
+      <div class="body" style="border-top:1px solid var(--line-2)">
+        <p class="note"><b>编辑</b>：直接改单元格；点「表面编号」格可把该面设为光阑。<b>多重结构</b>：.seq 里的 <code>ZOO</code> 记录（结构数、各结构标题、逐结构的 FNO / 面厚度 / 曲率 / 渐晕系数）会读进来，用工具栏「结构」下拉切换，<b>随结构变化的格子在表里标了色</b>，改这些格子会写回当前结构。物面厚度（<code>ZOO THI S0</code>）落到顶栏「物距」，因此近摄结构按<b>有限共轭</b>追迹：光线从物点发出而非平行入射，F/# 用像方工作 F/#（由近轴边缘光线角 1/(2|u′|) 反解入瞳），状态栏 RED 给出放大倍率。<b>渐晕</b>：若 .seq 带 <code>SETVIG</code> 存的 VUY/VLY/VUX/VLX，瞳区间直接按它逐视场插值取，不再靠通光孔径反推——很多 .seq 只在像面写 CIR，镜片没有孔径数据，这时这张表是唯一依据。<br><b>撤销</b>：所有改动（含「最佳对焦」写入的离焦量、插删面、波长预设、粘贴）都可 <b>撤销 / 重做</b>，快捷键 Ctrl+Z / Ctrl+Shift+Z（光标停在输入框里时让给浏览器的文本撤销）；<b>恢复初始</b>回到刚载入示例或刚导入 .seq 时的状态，这一步本身也能撤销。<b>粘贴</b>：从 Excel / 专利表格复制多行多列，选中起始格 Ctrl+V 即整块填入（列顺序 Y 半径→厚度→玻璃→半孔径→圆锥→A4 A6 A8…），行数不够会自动补。<b>非球面</b>：A4 A6 A8… 每项一列，列不够时最右会自动多出一列；表格可左右滚动。<b>材料</b>：直接写牌号，内置 <b id="glassN">—</b> 种厂商目录玻璃（SCHOTT / OHARA / HOYA / HIKARI / CDGM / SUMITA / NHG / CHINA / SPECIAL 等 19 家），输入时会自动补全；重名可用 <b>牌号_目录</b> 指定（<b>H-ZF72A_CDGM</b>、<b>NBFD25_HOYA</b>、<b>SBSL7_OHARA</b>）。查不到的写 <b>nd/vd</b>（如 <b>1.7292/54.7</b>）或 6 位 <b>MIL 代码</b>（如 <b>517640</b>）按模型玻璃算；留空为空气。<b>导入</b>：<b>CODE V .seq</b> 读面数据 / CIR 通光 / ASP 非球面 / STO / FNO / WL·WTW·REF / YRI·YAN / SETVIG 渐晕 / ZOO 多重结构；<b>Zemax .zmx</b>（UTF-16 或 UTF-8）读 SURF·CURV·DISZ·GLAS·CONI·PARM / STOP / FNUM·ENPD / FTYP·YFLN / WAVM·PWAV / VDYN·VCYN 渐晕 / MNUM·THIC·APER·FVCY 多重结构。两种格式走的是同一份解析代码，命令行批量转换用的也是它。</p>
+      </div>
+    </section>
+
+    <!-- ---- 波长 ---- -->
+    <section class="card">
+      <header><h2>波长</h2><span class="grow"></span><span class="badge" id="wlBadge">—</span></header>
+      <div class="ldmbar">
+        <button class="btn" id="wlAdd" type="button">加一行</button>
+        <button class="btn" id="wlDel" type="button">删末行</button>
+        <select id="wlPreset" aria-label="载入波长预设">
+          <option value="" selected>载入预设…</option>
+          <option value="p1">d 单色（587.6）</option>
+          <option value="p3">F d C 等权</option>
+          <option value="p5">可见光 5 线（10/27/29/23/11）</option>
+          <option value="vis">VIS Weighted（C–g，5500 K 黑体）</option>
+          <option value="leica">Leica Weighted（455–644）</option>
+          <option value="jp">日本厂商光谱权重</option>
+        </select>
+      </div>
+      <div class="wlscroll">
+        <table class="lde wl" id="wlTable">
+          <thead><tr>
+            <th style="min-width:32px">#</th>
+            <th style="min-width:86px">波长 nm</th>
+            <th style="min-width:60px">权重</th>
+            <th style="min-width:54px">占比</th>
+            <th style="min-width:70px">绘图颜色</th>
+            <th style="min-width:36px">主</th>
+          </tr></thead>
+          <tbody id="wlBody"></tbody>
+        </table>
+      </div>
+      <div class="body" style="border-top:1px solid var(--line-2)">
+        <p class="note"><b>预设</b>：可见光 5 线（10/27/29/23/11）、<b>VIS Weighted</b>（C–g 五线按 5500 K 黑体加权，权重 0.898/0.973/1.000/0.984/0.911）、<b>Leica Weighted</b>（短端截到 455 nm、长端用 C′ 线 643.8 nm，权重 7/8/9/7/4）、<b>日本厂商光谱权重</b>（3/22/30/12/3，重心压在 e 线）。三者主波长都是 546.1 nm（e 线）。绘图颜色<b>按波长的真实谱色</b>算：CIE 1931 配色函数（Wyman/Sloan/Shirley 多高斯拟合）→ sRGB，出色域直接截负、色相饱和度不动、亮度归一到同一目标，所以深浅两个主题下都看得清。改波长会自动重算颜色。</p>
+        <p class="note">权重按<b>通量</b>参与多色 MTF 合成——各波长的复数 OTF 加权求和后取模，参考点是多色质心，因此色焦移会如实压低 MTF。<b>主波长</b>用于近轴量、光线瞄准、衍射极限参考线和单色 Layout。颜色可点开手动改，改到波长上就会被重算回谱色。Layout 切到「按波长着色」时使用（同时用线型区分，不只靠颜色）。</p>
+      </div>
+    </section>
+    </div>
+
+    <!-- ---- 右：Layout + MTF ---- -->
+    <div class="viewcol">
+      <section class="card">
+        <header><h2>2D Layout</h2><span class="grow"></span><span class="badge" id="layoutBadge">—</span></header>
+        <div class="plotwrap"><svg class="plot" id="layout" role="img" aria-label="镜头二维结构图与光线追迹"></svg></div>
+        <div class="legend" id="layoutLegend"></div>
+      </section>
+
+      <section class="card">
+        <header><h2>MTF vs 视场</h2><span class="grow"></span><span class="badge live" id="perfBadge">—</span></header>
+        <div class="plotwrap"><svg class="plot" id="mtf" role="img" aria-label="调制传递函数随视场变化曲线"></svg></div>
+        <div class="legend" id="mtfLegend"></div>
+        <div class="hoverbar mono" id="hover">把指针移到图上可读取任意视场的 T / S 数值。</div>
+        <details class="tbl">
+          <summary>MTF 数据表</summary>
+          <div class="tblwrap"><table class="data" id="mtfTable"></table></div>
+        </details>
+      </section>
+
+      <section class="card">
+        <header><h2>球差 · 场曲/像散 · 畸变</h2><span class="grow"></span><span class="badge" id="aberBadge">—</span></header>
+        <div class="plotwrap"><svg class="plot" id="aber" role="img" aria-label="纵向球差、像散场曲与畸变曲线"></svg></div>
+        <div class="legend" id="aberLegend"></div>
+      </section>
+
+          </div>
+  </div>
+
+  <!-- ============ 光线扇形 ============ -->
+  <section class="card">
+    <header><h2>光线扇形（Ray Fan）</h2><span class="grow"></span><label class="hdrsel">刻度 ±<select id="fanscale" aria-label="光线扇形纵向刻度"><option value="0" selected>自动</option><option value="0.005">0.005</option><option value="0.01">0.01</option><option value="0.02">0.02</option><option value="0.05">0.05</option><option value="0.1">0.1</option><option value="0.2">0.2</option><option value="0.5">0.5</option></select> mm</label><span class="badge" id="fanBadge">—</span></header>
+    <div class="plotwrap"><svg class="plot" id="fan" role="img" aria-label="各视场的子午与弧矢光线像差曲线"></svg></div>
+    <div class="legend" id="fanLegend"></div>
+  </section>
+
+
+  <!-- ============ 关于（二级页） ============ -->
+  <div class="sheet" id="aboutSheet" hidden>
+    <div class="sheetbar">
+      <button class="iconbtn" id="aboutBack" type="button">← 返回</button>
+      <h2>关于 · 算法与验证</h2><span class="grow"></span>
+      <span class="sheetnote">全部计算在本机浏览器完成，没有后端</span>
+    </div>
+    <div class="sheetbody">
+<section><h3>算的是什么</h3><p>序列面实光线追迹（球面 / 二次曲面 / 偶次非球面）；玻璃取自<b>内置的 19 家厂商目录（3074 种牌号）</b>，按各自目录公式求折射率（Laurent 幂级数 / 厂商 Sellmeier / 标准 Sellmeier / Herzberger）；查不到的牌号可写 <code>nd/vd</code> 或 6 位 MIL 代码，按 Conrady 模型玻璃处理；入瞳位置由近轴矩阵求解；</p></section>
+
+<section><h3>Layout · 光阑 · 光线瞄准</h3><p><b>每视场 3 条光线</b>：上下两条取该视场未渐晕瞳区间的边缘，中间那条<b>牛顿迭代瞄到光阑面 (0,0)</b>，即真正的主光线——在入瞳里取 u=0 只有瞳像差为零时才等价，A2028 这种广角反远距在 35° 上会偏到光阑面下方 0.38 mm。<b>光阑符号</b>画在真实光阑半径处：面上写了 CIR 用 CIR，没写就用轴上满孔径光线在光阑面的实际落点（该 F/# 下真正起限制作用的半径；近轴值 EPD/2·|pupilMag| 只作兜底）。因此「光线瞄准」现在不再要求光阑面有 CIR。开启后每条光线牛顿迭代精确瞄到光阑面（同 Zemax Ray Aiming）；渐晕由各面 Y 半孔径决定。</p></section>
+
+<section><h3>MTF</h3><p>对齐 CODE V 的 <code>MTFVSFLD</code> 宏：该宏先跑 <code>setvig</code> 求渐晕因子，再调 <code>mtf</code> 命令，取的是<b>衍射 MTF</b>。<br>
+          <b>衍射模式</b>（默认）：按渐晕因子把通光瞳建模成缩放+偏心的等效椭圆瞳，瞳内均匀取样、由实光线光程算波前 OPD，OTF = 圆孔径解析面积因子（截止频率按各方向瞳半宽缩放）× 波前相位平均 ⟨e<sup>iΔφ</sup>⟩，多波长按通量加权合成复数 OTF。剪切取样在瞳缘用「按可用角点归一化的双线性」（不再退回最近邻——最近邻会把最多半格的坐标误差当成波前差，在 PV 大的视场上折算成几个弧度的相位噪声，与 32² 网格收敛值的最大偏差因此从 0.030 降到 0.011）。<br>
+          <b>几何模式</b>：对像面光斑直接做傅里叶变换取模，不含衍射，轴上会系统性偏高。</p></section>
+
+<section><h3>球差 · 场曲 · 畸变</h3><p>三条都用实光线算，不走赛得系数。<b>纵向球差</b>：轴上光线在归一化瞳高 ρ 处与光轴的交点减去像面 z——曲线底端不归零，那段偏移就是轴向色差。<b>像散场曲</b>：以主光线为中心在光阑面取 ±2% 瞳半径的一对光线（科丁顿构型的实光线版），子午取两条的交点、弧矢取 x=0 的位置，都换算成到像面的轴向距离；实线 = 子午 T、虚线 = 弧矢 S，与上面 MTF 图同一约定（注意 Zemax 的场曲图默认是反过来的：实线 S、虚线 T）。<b>畸变</b>：主光线实像高与<b>近轴主光线在像面上的高度</b>之比，不是 f·tanθ——像面不在近轴焦点上时两者会差几个千分之一，Cooke 三片就差 0.47%。参考光线不受通光孔径限制，否则大视场上整条会消失。</p></section>
+
+<section><h3>光线扇形（Ray Fan）</h3><p>页面最下面那张，布局照 CODE V 的 <code>RIM</code>：每个等分像高视场一行，左格子午（Δy 随子午瞳坐标）、右格弧矢（Δx 随弧矢瞳坐标），最上面是最大视场，默认 6 个视场点。横轴一律取<b>整个入瞳</b>的归一化坐标 −1…+1，曲线只画在该视场未渐晕的那一段——边缘视场短一截就是渐晕，和 CODE V 的图一个道理。纵向零点取该视场<b>主光线</b>在主波长下的落点，各波长上下错开即倍率色差。所有格子共用一个对称刻度：官方宏 <code>cvquickrim.seq</code> 的做法就是先扫一遍全部视场 × 波长的最大像差、再用 <code>SSI</code> 给每个变焦位统一设定，这里照搬。轴上那一行的子午扇实测严格奇对称（21 个采样点无一例外），是这条链路的一个硬校验。</p></section>
+
+<section><h3>多重结构 · 有限物距 · 渐晕</h3><p>.seq 的 <code>ZOO</code> 记录和 .zmx 的 <code>MNUM / THIC / APER / FVCY</code> 都会读进来——结构数、各结构标题、逐结构的 F/# 与面厚度 / 曲率 / 渐晕系数，用工具栏「结构」下拉切换，随结构变化的格子在表里标了色，改这些格子会写回当前结构。物面厚度落到顶栏「物距」，近摄结构按<b>有限共轭</b>追迹：光线从物点发出而非平行入射，F/# 用像方工作 F/#（由近轴边缘光线角 1/(2|u′|) 反解入瞳），状态栏 RED 给放大倍率。70 mm 微距的 1.0X 结构实测放大率 −0.9975，SIGMA 35 的 MFD 结构 −0.2004。<br><b>渐晕</b>：文件里若存了 CODE V 的 <code>SETVIG</code> 系数或 Zemax 的 <code>VDY/VCY</code>，瞳区间直接按它逐视场插值取，不再靠通光孔径反推——很多文件只在像面写 CIR，镜片没有孔径数据，这时这张表是唯一依据。两家的约定不同，统一换算成 CODE V 那套：<code>VUY = VCY − VDY</code>、<code>VLY = VCY + VDY</code>。</p></section>
+
+<section><h3>镜头文件导入</h3><p><b>CODE V .seq</b> 读面数据 / CIR 通光 / ASP 非球面 / STO / FNO / WL·WTW·REF / YRI·YAN / SETVIG / ZOO。<b>Zemax .zmx</b>（UTF-16 或 UTF-8 自动识别）读 SURF·CURV·DISZ·GLAS·CONI·PARM / STOP / FNUM·ENPD / FTYP·YFLN / WAVM·PWAV / VDYN·VCYN / MNUM·THIC·APER·FVCY。网页拖入和命令行批量转换走的是同一份解析代码。<br><b>有意不导入的</b>：Zemax 的 <code>FLAP</code> 浮动通光（逐结构重算，文件里只存了当前结构那一份，套到近摄结构会把边缘光线全挡掉；有渐晕系数时瞳已被完整定义）、多重结构里换玻璃（<code>GLSS</code>）、偶次非球面的 r² 项（<code>PARM 1</code>）、X 视场、非毫米单位——这些都只给提示，不闷声跳过。</p></section>
+
+<section><h3>曲线画法</h3><p>MTF-视场图按算出来的视场点用<b>单调三次 Hermite（PCHIP）</b>连线：过每一个点、不在点之间拱出多余波峰，只改画法不改数值。默认视场点 15 个（可选 6…31）；实测 11 / 15 / 31 点画出的曲线几乎重合，说明剩下的起伏是模型的真实结构而不是取样不足。</p></section>
+
+<section><h3>波长与谱色</h3><p>绘图颜色不是挑的，是<b>按波长算出来的真实谱色</b>：CIE 1931 配色函数用 Wyman/Sloan/Shirley (2013) 的多高斯拟合，转 sRGB。
+两处工程化处理：出色域<b>直接截负</b>而不是去饱和——谱色截出来才是常见的彩虹，去饱和会把 656 nm 的深红推成粉；
+色相和饱和度保持不动，只把<b>亮度归一到统一目标</b>，否则黄绿在浅色底上、蓝紫在深色底上都会看不清。
+拟合的尾巴在 680 nm 以上会失真（x̄ 与 ȳ 交叉，750 nm 会算成绿色），所以色相取值夹在 385~680 nm，可见区外再往灰里调一点。
+一个已知局限：520~560 nm 在 sRGB 里全部落在色域外的同一侧，截负后都是同一个绿，532 和 546 分不开——这是 sRGB 色域的限制，不是算错。
+网页、镜头库 JSON、命令行转换用的是同一个函数，颜色必然一致。</p></section>
+
+<section><h3>玻璃库</h3><p>SCHOTT 504 / OHARA 499 / HOYA 438 / HIKARI 318 / CDGM 323 / SUMITA 320 / NHG 215 / CHINA 135 / CORNFR 100 / CHANCE 73 / PILKINGTON 31 / SPECIAL 46（熔石英、CaF<sub>2</sub>、蓝宝石、Ge、ZnSe、PMMA…）等共 19 家。「玻璃」列有牌号自动补全；重名（如 BAF3）按 SCHOTT→OHARA→HOYA→HIKARI→CDGM→SUMITA… 的优先级取，也可写 <code>H-ZF72A_CDGM</code> 这种<b>牌号_目录</b>形式指定。CODE V / Zemax 的 <code>NBFD25_HOYA</code>、<code>SBSL7</code> 这类带后缀或去连字符的写法都能识别。<br>
+          <b>精度核对。</b>与厂商 Excel 的 n<sub>d</sub> 逐一对比：OHARA 126 种最大偏差 5.1e-6、HOYA 159 种 4.9e-6、HIKARI 151 种 4.1e-8；另用 MIL 代码反查全库，SCHOTT 99.4% / OHARA 99.2% / CDGM 99.7% 命中（不命中的多是 n<sub>d</sub>&gt;2 或 v<sub>d</sub>&gt;100 无法编码成 6 位）。<b>注意 CDGM 用的是 2024-06 版目录</b>，与 2026-03 版相比有 35 种牌号 n<sub>d</sub> 偏差达 1.9e-3。</p></section>
+
+<section><h3>已验证 · 对 CODE V 实测</h3><p>16 颗镜头 × 结构逐一反解「实像高 → 视场角」，主光线落点与目标一致到 1e-5 mm；厚透镜焦距与解析式一致到 1e-6；小孔径实光线落点与近轴焦点相差 6e-5 mm；瞄准落点与目标一致到 1e-5 mm；波前为零时衍射 MTF 精确复现圆孔径解析式（1e-16）；单片球差波前呈 ρ<sup>4</sup> 且随孔径 ∝1/F#<sup>4</sup>；追迹出的瞳区间与 CODE V <code>SETVIG</code> 存的 VUY/VLY 相差 0.002~0.04。<br>
+          <b>对 CODE V 实测</b>（索尼 55ZA，3 像高 × 3 频率 × T/S）：衍射模式<b>轴上偏差 +0.002~+0.005</b>；离轴仍偏高 0.03~0.08，原因是瞳取样在光阑面而非出瞳，未补偿离轴瞳像差。几何模式全场 RMS 偏差 0.015，但轴上系统性偏高。</p></section>
+
+<section><h3>修过的坑</h3><p>① 交点求解原来直接从光线起点解二次方程、按 |t| 最小取根；起点远在面后方时（有限物距、或首面曲率半径很大）最小根会落到球面另一侧——70 mm 微距的 1.2M 结构就这样把第 1 面落点解成 −9.7 而不是 +11.4。现在一律先平移到该面切平面再解。② 「实像高 → 视场角」原来用牛顿迭代，大角度上主光线追不通时会直接退回初值；现在改成先夹住再二分，且遇到追不通会把步子收回来。另外物距超过 10 km 一律按无限远：文件里的「无限远」常写成 1e10~1e15，真按有限共轭算，光程累加到那个量级时双精度误差已是微米量级，波前直接失去意义。</p></section>
+
+<section><h3>还没有</h3><p>衍射 MTF（需波前 OPD → FFT）、点列图、优化与公差、变焦位置、反射面与偏心倾斜。与 Zemax / CODE V 对照时请用它们的 <b>几何 MTF</b>，视场取相同角度点。</p></section>
+
+    </div>
+  </div>
+
+  <!-- ============ 状态栏 ============ -->
+  <div class="statuswrap">
+    <div class="status">
+      <span class="it"><b>DIM</b><i>毫米</i></span>
+      <span class="it key" id="stCfgWrap" style="display:none"><b>结构</b><i id="stCfg">—</i></span>
+      <span class="it key"><b>使用的 f/</b><i id="stFno">—</i></span>
+      <span class="it key"><b>EFL</b><i id="stEfl">—</i></span>
+      <span class="it"><b>BFL</b><i id="stBfl">—</i></span>
+      <span class="it"><b>入瞳 Φ</b><i id="stEpd">—</i></span>
+      <span class="it" title="放大倍率，物在无限远时为 0"><b>RED</b><i id="stRed">—</i></span>
+      <span class="it key" title="第 1 面到最末面顶点的距离"><b>OAL</b><i id="stOal">—</i></span>
+      <span class="it"><b>最大像高</b><i id="stImg">—</i></span>
+      <span class="it"><b>轴上 RMS</b><i id="stRms">—</i></span>
+      <span class="grow"></span>
+      <span class="it perf" id="stPerf">—</span>
+    </div>
+  </div>
+</div>
+
+<script src="data/index.js"></script>
+<script src="js/glassdb.js"></script>
+<script src="js/lensio.js"></script>
+<script src="js/optics.js"></script>
+<script src="js/app.js"></script>
+</body></html>
