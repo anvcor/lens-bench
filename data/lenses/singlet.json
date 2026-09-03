@@ -1,1 +1,0 @@
-{"id":"singlet","name":"平凸单片","note":"","src":"内置","tx":"51.68   4.0    NBK7\ninf    97.363  -","stop":1,"fno":8,"fov":2,"fmode":"angle","freqs":"10, 20, 40","apmode":"fno","aim":false,"objd":null,"nfield":15,"wl":[["656.3","1","#ff0000"],["587.6","1","#db7600"],["486.1","1","#009bce"]],"pri":1,"vigH":null,"cfgs":null,"warn":[],"kind":"builtin","sub":"2 面 · F/8"}
