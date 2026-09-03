@@ -11,30 +11,61 @@
     ? window.LENSDB : { index: [], inline: {}, base: 'data/lenses/' };
   var LENSCACHE = {};
 
-  function renderLensList() {
+  /* 镜头菜单分两级：先品牌、再镜头。品牌顺序就按 index 里的先后（build.js 已按
+     lenses/meta.json 的 order 排好），没标品牌的归到最后一组。 */
+  var OTHERB = '其他 / 未分类';
+  function brandOf(e) { return e.brand || OTHERB; }
+  function brandList() {
+    var out = [];
+    LENSDB.index.forEach(function (e) { var b = brandOf(e); if (out.indexOf(b) < 0) out.push(b); });
+    return out;
+  }
+  function renderBrandList() {
+    var bs = brandList(), n = {};
+    LENSDB.index.forEach(function (e) { n[brandOf(e)] = (n[brandOf(e)] || 0) + 1; });
+    $('brand').innerHTML = bs.map(function (b) {
+      return '<option value="' + esc(b) + '">' + esc(b) + ' (' + n[b] + ')</option>';
+    }).join('');
+  }
+  function renderLensList(brand) {
     var sel = $('ex');
-    sel.innerHTML = LENSDB.index.map(function (e) {
+    sel.innerHTML = LENSDB.index.filter(function (e) { return brandOf(e) === brand; }).map(function (e) {
       return '<option value="' + esc(e.id) + '">' + esc(e.name) + (e.sub ? ' · ' + esc(e.sub) : '') + '</option>';
     }).join('');
   }
-  function loadLens(id, done) {
+  /* 把两个下拉对到某颗镜头上（不触发载入） */
+  function syncLensSelects(id) {
+    var e = null;
+    for (var i = 0; i < LENSDB.index.length; i++) if (LENSDB.index[i].id === id) { e = LENSDB.index[i]; break; }
+    if (!e) { $('ex').selectedIndex = -1; return; }
+    $('brand').value = brandOf(e);
+    renderLensList(brandOf(e));
+    $('ex').value = id;
+  }
+  /* 只把镜头记录取回来，不碰界面状态——对比页和主页面共用这一层缓存 */
+  function getLens(id, cb) {
     var hit = LENSCACHE[id] || LENSDB.inline[id];
-    if (hit) { LENSCACHE[id] = hit; applyLens(hit); if (done) done(null, hit); return; }
-    var sel = $('ex'), old = sel.options[sel.selectedIndex];
-    if (old) old.textContent = old.textContent.replace(/ · 载入中…$/, '') + ' · 载入中…';
+    if (hit) { LENSCACHE[id] = hit; cb(null, hit); return; }
     fetch(LENSDB.base + encodeURIComponent(id) + '.json').then(function (r) {
       if (!r.ok) throw new Error('HTTP ' + r.status);
       return r.json();
-    }).then(function (L) {
-      LENSCACHE[id] = L;
+    }).then(function (L) { LENSCACHE[id] = L; cb(null, L); })
+      .catch(function (err) { cb(err); });
+  }
+  function loadLens(id, done) {
+    var sel = $('ex'), old = sel.options[sel.selectedIndex];
+    var busy = !(LENSCACHE[id] || LENSDB.inline[id]);
+    if (busy && old) old.textContent = old.textContent.replace(/ · 载入中…$/, '') + ' · 载入中…';
+    getLens(id, function (err, L) {
       if (old) old.textContent = old.textContent.replace(/ · 载入中…$/, '');
-      applyLens(L); histBase(); schedule(0);
+      if (err) {
+        showMsgs(['载入镜头 ' + id + ' 失败：' + err.message +
+          '（本地双击打开 html 时浏览器会拦截 fetch，请用单文件版，或把目录挂到本地服务器上）']);
+        if (done) done(err); return;
+      }
+      applyLens(L);
+      if (busy) { histBase(); schedule(0); }
       if (done) done(null, L);
-    }).catch(function (err) {
-      if (old) old.textContent = old.textContent.replace(/ · 载入中…$/, '');
-      showMsgs(['载入镜头 ' + id + ' 失败：' + err.message +
-        '（本地双击打开 html 时浏览器会拦截 fetch，请用单文件版，或把目录挂到本地服务器上）']);
-      if (done) done(err);
     });
   }
 
@@ -248,7 +279,7 @@
     Object.keys(c.thi).forEach(function (k) { if (state.rows[k]) state.rows[k].T = String(c.thi[k]); });
     Object.keys(c.rdy).forEach(function (k) { if (state.rows[k]) state.rows[k].R = (c.rdy[k] === 0 ? 'inf' : String(c.rdy[k])); });
     if (c.fno != null) $('fno').value = c.fno;
-    if (c.obj != null) $('objd').value = fmtObjDist(c.obj);
+    $('objd').value = fmtObjDist(c.obj == null ? Infinity : c.obj);   // JSON 里 Infinity 会变成 null
   }
   /* 改到被结构覆盖的格子时，同时更新该结构存的值，否则一切结构就被冲掉 */
   function cfgWriteBack(ri, field, val) {
@@ -296,6 +327,19 @@
     return a.length ? a : d;
   }
   function css(v) { return getComputedStyle(document.documentElement).getPropertyValue(v).trim(); }
+  /* 轴上最小 RMS 的离焦量：对若干瞳区的光线解 min Σw(y+uΔ)²，闭式 Δ = −Σwyu / Σwu²。
+     只用 7 条光线，够快，可以每次重算都跑一遍。 */
+  function axialBestFocus(sys, opt) {
+    var lam0 = opt.lambdas[opt.primary].nm / 1000;
+    var zn = [0.15, 0.3, 0.45, 0.6, 0.75, 0.9, 0.99], su = 0, syu = 0;
+    for (var i = 0; i < zn.length; i++) {
+      var r = OPT.launch(sys, 0, 0, sys.epd / 2 * zn[i], lam0, false);
+      if (!r || !r.ok || Math.abs(r.D[2]) < 1e-12) continue;
+      var u = r.D[1] / r.D[2];
+      su += zn[i] * u * u; syu += zn[i] * r.y * u;
+    }
+    return su > 1e-20 ? -syu / su : null;
+  }
   function paneW(id, min) {
     var el = $(id).parentNode, w = el ? el.clientWidth : 0;
     return Math.max(min, Math.round(w || min));
@@ -429,6 +473,20 @@
     if (st.apmode === 'stop' && !(p.surfaces[stopIdx] && p.surfaces[stopIdx].sd))
       msgs.push('光阑面（第 ' + (stopIdx + 1) + ' 面）没有 Y 半孔径，无法按光阑浮动，已退回 F/# 定义。');
     if (st.aim && !sys.aiming) msgs.push('本次未能启用光线瞄准（求不出光阑半径）。');
+    // 像面是不是就落在轴上焦点处？（近轴细光线与光轴的交点 vs 当前像面）
+    // 只取决于曲率 / 厚度 / 折射率，与孔径、非球面高次项无关，所以能直接判断
+    // 「文件里的后焦距对不对」。写死的镜头和正常的 .zmx 都在 1 波以内，超过就提示。
+    (function () {
+      var lam0 = opt.lambdas[opt.primary].nm / 1000;
+      var dz = axialBestFocus(sys, opt);
+      if (dz === null) return;
+      var w = Math.abs(dz) / (8 * sys.fno * sys.fno * lam0 / 1000);
+      if (w > 2) msgs.push('像面不在轴上最佳焦点上：最佳焦点在像面' + (dz > 0 ? '后' : '前') + ' '
+        + Math.abs(dz).toFixed(4) + ' mm（相当于 ' + w.toFixed(1) + ' 波离焦，F/' + sys.fno.toFixed(2)
+        + ' @ ' + opt.lambdas[opt.primary].nm + ' nm），MTF 会整体塌下来。'
+        + '这是曲率 / 厚度 / 折射率直接决定的，跟孔径和非球面无关——多半是文件里最后一段空气间隔被取整了，'
+        + '或者原文件在这一面上挂了个「边缘光线高度 = 0」的解而导出时没带出来。按「最佳对焦」即可补上。');
+    })();
 
     var t0 = performance.now();
     var mtf = OPT.mtfVsField(sys, opt);
@@ -497,8 +555,8 @@
   }
 
   /* ================= Layout ================= */
-  function renderLayout() {
-    var L = last.lay, s = last.sys, svg = $('layout');
+  function drawLayout(C, ids) {
+    var L = C.lay, s = C.sys, svg = $(ids.svg);
     var fieldCols = fieldRamp(L.fields.length);
     var inkC = css('--ink'), ink2 = css('--ink-2'), ink3 = css('--ink-3');
     var glass = css('--glass'), glass2 = css('--glass-2'), gstroke = css('--glass-stroke');
@@ -520,7 +578,7 @@
     var padZ = (maxZ - minZ) * 0.035 + 1;
 
     var W = maxZ - minZ + 2 * padZ, H = 2 * maxY;
-    var avail = paneW('layout', 480);
+    var avail = paneW(ids.svg, 480);
     var scale = Math.min(avail / W, 560 / H);
     var PX = avail, PY = Math.max(110, H * scale);
     var xoff = (PX - W * scale) / 2;
@@ -538,7 +596,7 @@
         gstroke + '" stroke-width="1.15" stroke-linejoin="round"/>');
     });
 
-    var byW = L.byWvl, wlCols = last.st.wl.map(function (x) { return x.c; });
+    var byW = L.byWvl, wlCols = C.wlCols || [];
     L.bundles.forEach(function (b) {
       var c = byW ? (wlCols[b.wi] || fieldCols[0]) : (fieldCols[b.fi] || fieldCols[fieldCols.length - 1]);
       var da = byW ? DASH[b.wi % DASH.length] : '';
@@ -548,7 +606,7 @@
       });
     });
 
-    var si = last.opt.stopIdx, zs = s.zVertex[si];
+    var si = C.opt.stopIdx, zs = s.zVertex[si];
     if (zs !== undefined) {
       var hs = s.surfaces[si].sd || L.sdStop || Math.max(L.maxR[si] * 1.06, s.epd / 2);
       g.push('<line x1="' + X(zs) + '" y1="' + Y(hs) + '" x2="' + X(zs) + '" y2="' + Y(hs * 1.4 + 0.5) + '" stroke="' + inkC + '" stroke-width="2"/>');
@@ -559,7 +617,7 @@
 
     // 像面线高度 = 最大视场的实像高，和光线落点齐平
     var maxH = 0;
-    if (last.mtf.rows.length) last.mtf.rows.forEach(function (r) { maxH = Math.max(maxH, r.imgH || 0); });
+    if (C.mtf.rows.length) C.mtf.rows.forEach(function (r) { maxH = Math.max(maxH, r.imgH || 0); });
     L.bundles.forEach(function (b) {
       b.rays.forEach(function (r) {
         var p = r[r.length - 1];
@@ -576,7 +634,7 @@
     svg.innerHTML = g.join('');
 
     var drawn = L.bundles.reduce(function (a2, b) { return a2 + b.rays.length; }, 0);
-    $('layoutBadge').textContent = L.elements.length + ' 片 · ' + drawn + ' 条';
+    $(ids.badge).textContent = L.elements.length + ' 片 · ' + drawn + ' 条';
     if (byW) {
       var seen = {}, items = [];
       L.bundles.forEach(function (b) {
@@ -585,20 +643,25 @@
           (DASH[b.wi % DASH.length] ? ';border-top:2.5px dashed ' + (wlCols[b.wi] || fieldCols[0]) + ';background:none;height:0' : '') +
           '"></span>' + b.nm + ' nm</span>');
       });
-      $('layoutLegend').innerHTML = items.join('') +
+      $(ids.legend).innerHTML = items.join('') +
         '<span class="lg conv">视场 ' + L.fields.map(function (f) { return f.toFixed(1) + '°'; }).join(' / ') +
         ' · 颜色与线型同时区分波长 · 1 : 1</span>';
     } else {
-      $('layoutLegend').innerHTML = L.bundles.map(function (b) {
+      $(ids.legend).innerHTML = L.bundles.map(function (b) {
         var sp = b.span ? '<span style="color:' + ink3 + '"> [' + b.span.lo.toFixed(2) + ', ' + b.span.hi.toFixed(2) + ']</span>'
           : '<span style="color:' + ink3 + '"> 全渐晕</span>';
         return '<span class="lg"><span class="sw" style="background:' + (fieldCols[b.fi] || fieldCols[0]) + '"></span>' +
           b.field.toFixed(1) + '°' + sp + '</span>';
       }).join('') + '<span class="lg conv">方括号 = 该视场未渐晕的子午瞳区间 · 主波长 ' +
-        last.opt.lambdas[last.opt.primary].nm + ' nm · 1 : 1</span>';
+        C.opt.lambdas[C.opt.primary].nm + ' nm · 1 : 1</span>';
     }
   }
 
+  function renderLayout() {
+    drawLayout({ lay: last.lay, sys: last.sys, mtf: last.mtf, opt: last.opt,
+                 wlCols: last.st.wl.map(function (x) { return x.c; }) },
+               { svg: 'layout', badge: 'layoutBadge', legend: 'layoutLegend' });
+  }
   /* ================= MTF ================= */
   var PLOT = { w: 780, h: 330, l: 50, r: 82, t: 14, b: 44 };
   function renderMTF() {
@@ -1092,6 +1155,10 @@
     state.wl = wlSet(k); state.pri = WLPRI[k]; renderWL(); schedule(0);
   });
   $('ex').addEventListener('change', function () { loadLens(this.value); histBase(); schedule(0); });
+  $('brand').addEventListener('change', function () {
+    renderLensList(this.value);
+    if ($('ex').options.length) { $('ex').selectedIndex = 0; loadLens($('ex').value); histBase(); schedule(0); }
+  });
 
   function syncFMode() {
     $('fovLabel').textContent = $('fmode').value === 'height' ? '最大实像高 mm' : '半视场 °';
@@ -1123,7 +1190,7 @@
   function syncApMode() {
     var m = $('apmode').value;
     $('fno').disabled = (m === 'stop');
-    $('fnoLabel').textContent = m === 'fno' ? 'F/#' : m === 'epd' ? '入瞳直径 mm' : '（由光阑定）';
+    $('fnoLabel').textContent = m === 'fno' ? '工作 F/#' : m === 'fnoinf' ? 'F/# (∞)' : m === 'epd' ? '入瞳直径 mm' : '（由光阑定）';
   }
   /* 把一条镜头记录装进界面。.seq / .zmx 导入和镜头库走的是同一个入口 */
   function applyLens(e) {
@@ -1172,17 +1239,19 @@
     var btn = this, label = btn.textContent;
     btn.textContent = '搜索中…'; btn.disabled = true;
     setTimeout(function () {
-      var st = last.st, sur = last.surfaces;
-      var base = {
-        lambdas: last.opt.lambdas, primary: 0, stopIdx: last.opt.stopIdx,
-        apertureMode: st.apmode, fno: st.fno, epd: st.fno, rayAiming: st.aim, maxFov: st.fov,
-        nGrid: 12, nField: 3, freqs: [], nRayViz: 3, nFieldViz: 1, defocus: 0
-      };
+      var sur = last.surfaces;
+      // 直接沿用当前一次计算的全部设置（视场定义 / 物距 / 渐晕 / 波长），只把采样调粗、频率清空
+      var base = Object.assign({}, last.opt, { nGrid: 12, freqs: [], nRayViz: 3, nFieldViz: 1 });
+      if (base.fieldsMTF && base.fieldsMTF.length > 3) {
+        var fm = base.fieldsMTF;
+        base.fieldsMTF = [fm[0], fm[Math.floor((fm.length - 1) / 2)], fm[fm.length - 1]];
+      } else if (!base.fieldsMTF) base.nField = 3;
       var cost = function (d) {
         var o = Object.assign({}, base, { defocus: d });
-        var r = OPT.mtfVsField(OPT.buildSystem(sur, o), o);
+        var s = OPT.buildSystem(sur, o); s.vig = last.sys.vig;
+        var r = OPT.mtfVsField(s, o);
         var s2 = 0, n = 0;
-        r.rows.forEach(function (row) { s2 += row.rms * row.rms; n++; });
+        r.rows.forEach(function (row) { if (isFinite(row.rms) && row.rms > 0) { s2 += row.rms * row.rms; n++; } });
         return n ? Math.sqrt(s2 / n) : Infinity;
       };
       var efl = Math.abs(last.sys.efl); if (!isFinite(efl) || efl > 1e5) efl = 50;
@@ -1227,7 +1296,9 @@
   $('aboutBtn').addEventListener('click', function () { aboutOpen(true); });
   $('aboutBack').addEventListener('click', function () { aboutOpen(false); });
   document.addEventListener('keydown', function (e) {
-    if (e.key === 'Escape' && !$('aboutSheet').hidden) { e.preventDefault(); aboutOpen(false); }
+    if (e.key !== 'Escape') return;
+    if (!$('aboutSheet').hidden) { e.preventDefault(); aboutOpen(false); }
+    else if (!$('cmpSheet').hidden) { e.preventDefault(); cmpOpen(false); }
   });
 
   $('themeBtn').addEventListener('click', function () {
@@ -1235,10 +1306,280 @@
     var dark = cur ? cur === 'dark' : matchMedia('(prefers-color-scheme: dark)').matches;
     document.documentElement.setAttribute('data-theme', dark ? 'light' : 'dark');
     if (last) { renderLayout(); renderMTF(); renderAber(); renderFan(); }
+    if (CMP.on) cmpRun();
   });
 
+  /* ================= 双镜头对比（二级页） =================
+     共用：光谱 / 频率 / MTF 算法 / 瞳面网格 / 视场点数 / 横轴。
+     各自按文件走：孔径定义与 F/#、视场定义与最大像高、渐晕系数、多重结构。
+     —— 这几项是镜头本身的规格，强行统一就不是那颗镜头了。 */
+  var CMP = { A: { id: null, cfg: 0, res: null }, B: { id: null, cfg: 0, res: null }, on: false };
+  var CMPCA = ['--f2', '--f3', '--f1', '--f4'];      // A：冷色
+  var CMPCB = ['--v2', '--v3', '--v1', '--v2'];      // B：暖色
+
+  function cmpShared() {
+    return {
+      wl: $('cmpWl').value,
+      freqs: parseList($('cmpFreqs').value, [10, 30]).filter(function (v) { return v > 0; }).slice(0, 4),
+      mode: $('cmpMode').value, ts: $('cmpTS').value, xax: $('cmpX').value,
+      ngrid: +$('cmpGrid').value, nfield: +$('cmpN').value, focus: $('cmpFocus').checked
+    };
+  }
+  /* 建系统 + 挂渐晕 + 定视场点（与主页面 compute() 同一套规则） */
+  function cmpAttach(sur, opt, L, c) {
+    var sys = OPT.buildSystem(sur, opt);
+    var hgt = (L.fmode || 'height') === 'height';
+    var vsrc = (c && c.vig) || null;
+    var lam = opt.lambdas[opt.primary].nm / 1000;
+    if (vsrc && vsrc.vuy && L.vigH && L.vigH.length === vsrc.vuy.length) {
+      sys.vig = { th: L.vigH.map(function (h) { return hgt ? OPT.angleForHeight(sys, h, lam) : h; }),
+                  vuy: vsrc.vuy, vly: vsrc.vly || vsrc.vuy,
+                  vux: vsrc.vux || vsrc.vuy, vlx: vsrc.vlx || vsrc.vux || vsrc.vuy };
+    }
+    if (hgt) {
+      var mk = function (n) {
+        var o = [];
+        for (var q = 0; q < n; q++) o.push(n === 1 ? 0 : OPT.angleForHeight(sys, L.fov * q / (n - 1), lam));
+        return o;
+      };
+      opt.fieldsMTF = mk(opt.nField); opt.fieldsViz = mk(opt.nFieldViz);
+      opt.maxFov = opt.fieldsMTF[opt.fieldsMTF.length - 1];
+    } else { opt.fieldsMTF = null; opt.fieldsViz = null; opt.maxFov = L.fov; }
+    opt.fieldsFan = [];
+    for (var qf = 0; qf < NFAN; qf++) opt.fieldsFan.push(opt.maxFov * qf / (NFAN - 1));
+    return sys;
+  }
+  function cmpBuild(L, ci, S) {
+    if (!L || !L.tx) return null;
+    var sur = OPT.parsePrescription(L.tx).surfaces;
+    if (sur.length < 2) return null;
+    var c = (L.cfgs && L.cfgs[ci]) || null;
+    var fno = L.fno, objd = (L.objd == null ? Infinity : L.objd);
+    if (c) {
+      Object.keys(c.thi).forEach(function (k) { if (sur[+k]) sur[+k].T = c.thi[k]; });
+      Object.keys(c.rdy).forEach(function (k) { if (sur[+k]) sur[+k].R = c.rdy[k]; });
+      if (c.fno != null) fno = c.fno;
+      objd = (c.obj == null ? Infinity : c.obj);
+    }
+    var wl, pri;
+    // 预设表里的波长 / 权重是字符串（主页面靠 wlActive 转数），这里必须自己转，
+    // 否则权重会被当字符串连起来累加，谱段一多 MTF 直接塌成 0
+    if (S.wl && WLSETS[S.wl]) {
+      wl = wlSet(S.wl).map(function (x) { return { nm: +x.nm, w: +x.w, c: x.c }; });
+      pri = WLPRI[S.wl];
+    }
+    else {
+      wl = (L.wl || []).map(function (x) { return { nm: +x[0], w: +x[1], c: x[2] || wlColor(x[0]) }; });
+      pri = L.pri || 0;
+      if (!wl.length) { wl = wlSet('p5'); pri = 1; }
+    }
+    pri = Math.min(Math.max(pri | 0, 0), wl.length - 1);
+    var opt = {
+      lambdas: wl.map(function (x) { return { nm: x.nm, w: x.w }; }), primary: pri,
+      stopIdx: Math.min((L.stop || 1) - 1, sur.length - 1),
+      apertureMode: L.apmode || 'fno', fno: fno, epd: fno, rayAiming: false,
+      maxFov: L.fov, defocus: 0, nGrid: S.ngrid, nField: S.nfield,
+      freqs: S.freqs, nRayViz: 3, nFieldViz: 3, colorBy: 'field', mtfMode: S.mode, objDist: objd
+    };
+    var sys = cmpAttach(sur, opt, L, c);
+    if (S.focus) {
+      var dz = axialBestFocus(sys, opt);
+      if (dz !== null && isFinite(dz)) { opt.defocus = dz; sys = cmpAttach(sur, opt, L, c); }
+    }
+    return { L: L, opt: opt, sys: sys, wl: wl, hgt: (L.fmode || 'height') === 'height',
+             mtf: OPT.mtfVsField(sys, opt), lay: OPT.layoutGeometry(sys, opt) };
+  }
+
+  /* ---- 两个下拉 ---- */
+  function cmpFillBrand(k) {
+    var n = {};
+    LENSDB.index.forEach(function (e) { n[brandOf(e)] = (n[brandOf(e)] || 0) + 1; });
+    $('cmpBrand' + k).innerHTML = brandList().map(function (b) {
+      return '<option value="' + esc(b) + '">' + esc(b) + ' (' + n[b] + ')</option>';
+    }).join('');
+  }
+  function cmpFillLens(k, brand) {
+    $('cmpEx' + k).innerHTML = LENSDB.index.filter(function (e) { return brandOf(e) === brand; })
+      .map(function (e) { return '<option value="' + esc(e.id) + '">' + esc(e.name) + '</option>'; }).join('');
+  }
+  function cmpFillCfg(k, L) {
+    var w = $('cmpCfgWrap' + k), sel = $('cmpCfg' + k);
+    if (!L || !L.cfgs || L.cfgs.length < 2) { w.style.display = 'none'; sel.innerHTML = ''; return; }
+    w.style.display = '';
+    sel.innerHTML = L.cfgs.map(function (c, i) {
+      return '<option value="' + i + '">Z' + (i + 1) + ' · ' + esc(c.title) + '</option>';
+    }).join('');
+    sel.value = String(Math.min(CMP[k].cfg, L.cfgs.length - 1));
+  }
+  function cmpPick(k, id, cb) {
+    CMP[k].id = id;
+    getLens(id, function (err, L) {
+      if (err) { CMP[k].res = null; if (cb) cb(); return; }
+      var e = null;
+      for (var i = 0; i < LENSDB.index.length; i++) if (LENSDB.index[i].id === id) e = LENSDB.index[i];
+      CMP[k].name = (e && e.name) || L.name || id;
+      CMP[k].brand = e ? brandOf(e) : '';
+      if (!L.cfgs || CMP[k].cfg >= L.cfgs.length) CMP[k].cfg = 0;
+      CMP[k].L = L;
+      $('cmpBrand' + k).value = CMP[k].brand;
+      cmpFillLens(k, CMP[k].brand);
+      $('cmpEx' + k).value = id;
+      cmpFillCfg(k, L);
+      if (cb) cb();
+    });
+  }
+
+  /* ---- 计算 + 画 ---- */
+  function cmpRun() {
+    if (!CMP.on) return;
+    var S = cmpShared();
+    ['A', 'B'].forEach(function (k) {
+      CMP[k].res = CMP[k].L ? cmpBuild(CMP[k].L, CMP[k].cfg, S) : null;
+      cmpSide(k);
+    });
+    cmpChart(S);
+  }
+  function cmpSide(k) {
+    var R = CMP[k].res;
+    if (!R) { $('cmpLay' + k).innerHTML = ''; $('cmpStat' + k).innerHTML = ''; $('cmpLayBadge' + k).textContent = '—'; return; }
+    drawLayout({ lay: R.lay, sys: R.sys, mtf: R.mtf, opt: R.opt, wlCols: R.wl.map(function (x) { return x.c; }) },
+               { svg: 'cmpLay' + k, badge: 'cmpLayBadge' + k, legend: 'cmpLayLegend' + k });
+    var maxH = 0;
+    R.mtf.rows.forEach(function (r) { maxH = Math.max(maxH, r.imgHc || r.imgH || 0); });
+    var it = [['EFL', fmt(R.sys.efl, 3)], ['使用的 F/', fmt(R.sys.fno, 3)], ['入瞳 ⌀', fmt(R.sys.epd, 3)],
+              ['最大像高', fmt(maxH, 3)], ['轴上 RMS', fmt(R.mtf.rows[0] ? R.mtf.rows[0].rms : 0, 2) + ' µm']];
+    if (Math.abs(R.sys.mag || 0) > 1e-9) it.push(['RED', fmt(R.sys.mag, 4)]);
+    if (Math.abs(R.opt.defocus) > 1e-9) it.push(['离焦', fmt(R.opt.defocus, 4)]);
+    var nm = R.opt.lambdas.map(function (x) { return x.nm; });
+    it.push(['波长', nm.length + ' 条 · 主 ' + R.opt.lambdas[R.opt.primary].nm + ' nm']);
+    $('cmpStat' + k).innerHTML = it.map(function (x) {
+      return '<span><b>' + esc(x[0]) + '</b><i>' + esc(x[1]) + '</i></span>';
+    }).join('');
+  }
+  function cmpChart(S) {
+    var svg = $('cmpMtf');
+    var A = CMP.A.res, B = CMP.B.res, sets = [];
+    if (A) sets.push({ k: 'A', R: A, cols: CMPCA.map(css) });
+    if (B) sets.push({ k: 'B', R: B, cols: CMPCB.map(css) });
+    if (!sets.length) { svg.innerHTML = ''; $('cmpLegend').innerHTML = ''; $('cmpBadge').textContent = '—'; return; }
+
+    // 画幅比例跟主页面的 MTF 图一致（高 = 宽 × 0.47，约 2.13 : 1）；
+    // 对比页整宽比主页面右栏宽得多，所以上限放到 860，另加一道视口高度的兜底，
+    // 免得在笔记本屏上一张图就把整屏占满。
+    var W = paneW('cmpMtf', 620);
+    var H = Math.round(Math.max(360, Math.min(W * 0.47, 860, (window.innerHeight || 900) * 0.72)));
+    var P = { l: 52, r: 96, t: 14, b: 46 };
+    var iw = W - P.l - P.r, ih = H - P.t - P.b;
+    var ink = css('--ink'), ink2 = css('--ink-2'), ink3 = css('--ink-3'), lineC = css('--line-2');
+    var byH = S.xax === 'h';
+    var xmax = 0;
+    sets.forEach(function (t) {
+      t.hx = t.R.mtf.rows.map(function (r) { return (t.R.hgt ? (r.imgHc || r.imgH) : r.field) || 0; });
+      t.hmax = Math.max(t.hx[t.hx.length - 1] || 1e-6, 1e-6);
+      xmax = Math.max(xmax, t.hmax);
+    });
+    if (!byH) xmax = 1;
+    var X = function (v) { return P.l + iw * Math.max(0, Math.min(1, v / xmax)); };
+    var Y = function (m) { return P.t + ih * (1 - Math.max(0, Math.min(1, m))); };
+    var g = [];
+
+    for (var i = 0; i <= 10; i++) {
+      var v = i / 10, y = Y(v);
+      g.push('<line x1="' + P.l + '" y1="' + y.toFixed(1) + '" x2="' + (P.l + iw) + '" y2="' + y.toFixed(1) +
+        '" stroke="' + lineC + '" stroke-width="1"/>');
+      g.push('<text x="' + (P.l - 8) + '" y="' + (y + 4).toFixed(1) + '" fill="' + ink3 +
+        '" font-size="10.5" text-anchor="end" font-family="IBM Plex Mono, monospace">' + (i === 0 ? '0' : i === 10 ? '1' : v.toFixed(1)) + '</text>');
+    }
+    var step = niceStep(xmax / Math.max(8, Math.min(24, Math.round(iw / 58))));
+    for (var f = 0; f <= xmax + step * 1e-6; f += step) {
+      var x = X(Math.min(f, xmax));
+      g.push('<line x1="' + x.toFixed(1) + '" y1="' + P.t + '" x2="' + x.toFixed(1) + '" y2="' + (P.t + ih) +
+        '" stroke="' + lineC + '" stroke-width="1"/>');
+      g.push('<text x="' + x.toFixed(1) + '" y="' + (P.t + ih + 17) + '" fill="' + ink3 +
+        '" font-size="10.5" text-anchor="middle" font-family="IBM Plex Mono, monospace">' + (+f.toFixed(2)) + '</text>');
+    }
+    g.push('<text x="' + (P.l + iw / 2) + '" y="' + (H - 8) + '" fill="' + ink2 + '" font-size="11" text-anchor="middle">' +
+      (byH ? 'Y 实像高 (mm)' : '归一化视场') + '</text>');
+    g.push('<text transform="translate(16,' + (P.t + ih / 2) + ') rotate(-90)" fill="' + ink2 + '" font-size="11" text-anchor="middle">MTF</text>');
+    g.push('<rect x="' + P.l + '" y="' + P.t + '" width="' + iw + '" height="' + ih + '" fill="none" stroke="' + css('--line') + '" stroke-width="1"/>');
+
+    var labels = [];
+    sets.forEach(function (t) {
+      var rows = t.R.mtf.rows, lam0 = t.R.opt.lambdas[t.R.opt.primary].nm / 1000;
+      S.freqs.forEach(function (nu, q) {
+        var c = t.cols[q % t.cols.length];
+        var dl = OPT.diffractionMTF(nu, lam0, t.R.sys.fno);
+        if (dl > 0.002) g.push('<line x1="' + P.l + '" y1="' + Y(dl).toFixed(1) + '" x2="' + (P.l + iw) + '" y2="' + Y(dl).toFixed(1) +
+          '" stroke="' + c + '" stroke-width="1" stroke-dasharray="2 5" opacity=".45"/>');
+        var kinds = S.ts === 't' ? [['T', 0]] : S.ts === 's' ? [['S', 1]]
+                  : S.ts === 'avg' ? [['A', 0]] : [['T', 0], ['S', 1]];
+        kinds.forEach(function (kk) {
+          var pts = rows.map(function (r, ri) {
+            var val = kk[0] === 'A' ? (r.T[q] + r.S[q]) / 2 : r[kk[0]][q];
+            return [X(byH ? t.hx[ri] : t.hx[ri] / t.hmax), Y(val)];
+          });
+          g.push('<path d="' + pchip(pts) + '" fill="none" stroke="' + c + '" stroke-width="2.1" stroke-linejoin="round" stroke-linecap="round"' +
+            (kk[1] ? ' stroke-dasharray="5 3.5"' : '') + '/>');
+        });
+        var lastR = rows[rows.length - 1];
+        labels.push({ y: Y(S.ts === 's' ? lastR.S[q] : S.ts === 'avg' ? (lastR.T[q] + lastR.S[q]) / 2 : lastR.T[q]),
+                      text: t.k + ' ' + nu, c: c });
+      });
+    });
+    labels.sort(function (a, b) { return a.y - b.y; });
+    for (var q2 = 1; q2 < labels.length; q2++) if (labels[q2].y - labels[q2 - 1].y < 13) labels[q2].y = labels[q2 - 1].y + 13;
+    labels.forEach(function (L2) {
+      g.push('<text x="' + (P.l + iw + 8) + '" y="' + (L2.y + 4).toFixed(1) + '" fill="' + L2.c +
+        '" font-size="11" font-weight="600" font-family="IBM Plex Mono, monospace">' + esc(L2.text) + '</text>');
+    });
+
+    svg.setAttribute('viewBox', '0 0 ' + W + ' ' + H);
+    svg.setAttribute('preserveAspectRatio', 'none');
+    svg.innerHTML = g.join('');
+
+    var tsTxt = S.ts === 't' ? '只画子午 T' : S.ts === 's' ? '只画弧矢 S'
+              : S.ts === 'avg' ? '画 (T+S)/2' : '实线 = 子午 T　虚线 = 弧矢 S';
+    $('cmpLegend').innerHTML = sets.map(function (t) {
+      return '<span class="lg"><span class="sw" style="background:' + t.cols[0] + '"></span>' +
+        t.k + ' · ' + esc(CMP[t.k].name || '') + ' · F/' + fmt(t.R.sys.fno, 2) + '</span>';
+    }).join('') + '<span class="lg conv">' + tsTxt + '</span>' +
+      '<span class="lg conv" style="color:' + ink3 + '">短虚线 = 各自的衍射极限</span>';
+    $('cmpBadge').textContent = sets.map(function (t) { return t.k + ' ' + t.R.mtf.rows.length + ' 点'; }).join(' · ') +
+      ' · ' + S.freqs.join('/') + ' cyc/mm';
+  }
+
+  /* ---- 开关与事件 ---- */
+  function cmpOpen(on) {
+    var sh = $('cmpSheet');
+    sh.hidden = !on; CMP.on = on;
+    document.body.style.overflow = on ? 'hidden' : '';
+    if (!on) return;
+    sh.scrollTop = 0;
+    cmpFillBrand('A'); cmpFillBrand('B');
+    if (!CMP.A.id) {
+      var ids = LENSDB.index.map(function (e) { return e.id; });
+      var a = ids[0], b = ids[1] || ids[0];
+      cmpPick('A', a, function () { cmpPick('B', b, cmpRun); });
+    } else cmpRun();
+  }
+  $('cmpBtn').addEventListener('click', function () { cmpOpen(true); });
+  $('cmpBack').addEventListener('click', function () { cmpOpen(false); });
+  ['A', 'B'].forEach(function (k) {
+    $('cmpBrand' + k).addEventListener('change', function () {
+      cmpFillLens(k, this.value);
+      if ($('cmpEx' + k).options.length) { CMP[k].cfg = 0; cmpPick(k, $('cmpEx' + k).value, cmpRun); }
+    });
+    $('cmpEx' + k).addEventListener('change', function () { CMP[k].cfg = 0; cmpPick(k, this.value, cmpRun); });
+    $('cmpCfg' + k).addEventListener('change', function () { CMP[k].cfg = +this.value; cmpRun(); });
+  });
+  ['cmpWl', 'cmpFreqs', 'cmpMode', 'cmpTS', 'cmpX', 'cmpGrid', 'cmpN', 'cmpFocus'].forEach(function (id) {
+    $(id).addEventListener('change', cmpRun);
+  });
+  addEventListener('resize', function () { if (CMP.on) cmpRun(); });
+
   /* ================= 启动 ================= */
-  renderLensList();
+  renderBrandList();
+  renderLensList($('brand').value);
   var saved = readHash();
   if (saved && saved.tx) {
     state.rows = textToRows(saved.tx);
@@ -1253,8 +1594,11 @@
     $('aim').checked = !!saved.aim;
     ['ngrid', 'nfield', 'nviz', 'nfviz'].forEach(function (k) { if (saved[k]) $(k).value = saved[k]; });
     syncApMode(); syncFMode(); renderLDE();
+    $('ex').selectedIndex = -1;              // 链接里带的处方不属于库里任何一颗
   } else {
-    loadLens((LENSDB.index[0] && LENSDB.index[0].id) || 'sony-55za');
+    var first = (LENSDB.index[0] && LENSDB.index[0].id) || '55za';
+    syncLensSelects(first);
+    loadLens(first);
   }
   syncFMode();
   renderWL();

@@ -7,6 +7,13 @@ var OPT = (function () {
   'use strict';
 
   /* ---------- 小玻璃库：牌号 -> [nd, vd] ---------- */
+  /* 比内置目录快照更新的牌号：设计文件已经在用，但打包进来的厂商目录里还没有。
+     只有 nd / vd，按 Conrady 模型玻璃代入，标签和提示里都标出来，别和目录玻璃混为一谈。
+     每一条都要能独立核对：数值来源见 README，并用设计本身反解验证过
+     （代进去后像面正好落在轴上焦点、且轴上 RMS 落到衍射量级，别的取值都不成立）。 */
+  var GNEW = {
+    nbfd26: [1.83401, 25.97, 'HOYA']        // Sony FE 50mm F1.2 GM 用；HOYA20251120 目录
+  };
   var CATALOG = {
     'air': null,
     'nbk7': [1.51680, 64.17], 'bk7': [1.51680, 64.17],
@@ -163,7 +170,7 @@ var OPT = (function () {
   /* ---------- 解析处方文本 ---------- */
   function parsePrescription(text) {
     var lines = String(text).split(/\r?\n/);
-    var surfaces = [], warnings = [], missMat = {}, missList = [], subList = [];
+    var surfaces = [], warnings = [], missMat = {}, missList = [], subList = [], newList = [];
     for (var li = 0; li < lines.length; li++) {
       var raw = lines[li].trim();
       if (!raw || raw[0] === '#' || raw.slice(0, 2) === '//') continue;
@@ -178,6 +185,7 @@ var OPT = (function () {
       if (tk.length > 2 && !isPlainNumber(tk[2])) {
         var m = parseMaterial(tk[2]);
         if (m.err) { if (!missMat[tk[2]]) { missMat[tk[2]] = 1; missList.push(tk[2]); } }
+        else if (m.model && !missMat['^' + tk[2]]) { missMat['^' + tk[2]] = 1; newList.push(m.label); }
         else if (m.sub && !missMat['~' + tk[2]]) {
           missMat['~' + tk[2]] = 1; subList.push(tk[2].toUpperCase() + ' → ' + m.glass);
         }
@@ -195,6 +203,8 @@ var OPT = (function () {
 
       surfaces.push({ R: R, T: T, n: mat || AIR, isGlass: !!mat, matLabel: matLabel, sd: sd, k: k, asph: asph });
     }
+    if (newList.length) warnings.push('这些是比内置目录快照更新的牌号，库里还没有，已按 nd/vd 代入模型玻璃：' +
+      newList.join('、') + '。色散曲线是拟合的，二级光谱会有细微出入；要精确可在「玻璃」列直接写目录公式对应的 nd/vd。');
     if (subList.length) warnings.push('这些牌号库里没有完全同名，已按去掉末位变体后缀的同族玻璃代入：' +
       subList.join('、') + '。折射率取的是同族基础牌号，个位数变体（-L / -M 之类）之间 nd 通常差 1e-4 量级。');
     if (missList.length) warnings.push('内置玻璃库（' + glassCount() + ' 种牌号）里找不到：' +
@@ -269,6 +279,11 @@ var OPT = (function () {
     if (CATALOG[key]) {
       var g = CATALOG[key];
       return { fn: makeGlass(g[0], g[1]), label: t.toUpperCase() + ' (' + g[0].toFixed(4) + '/' + g[1].toFixed(1) + ')' };
+    }
+    if (GNEW[key]) {
+      var gn = GNEW[key];
+      return { fn: makeGlass(gn[0], gn[1]), model: true,
+               label: t.toUpperCase() + ' (' + gn[0].toFixed(5) + '/' + gn[1].toFixed(2) + ', ' + gn[2] + ' 新牌号 · 模型玻璃)' };
     }
     return { fn: null, label: 'air', err: true };
   }
@@ -451,6 +466,7 @@ var OPT = (function () {
     if (opt.apertureMode === 'epd') epd = opt.epd;
     else if (opt.apertureMode === 'stop' && surfaces[opt.stopIdx] && surfaces[opt.stopIdx].sd && Math.abs(fo.pupilMag) > 1e-9)
       epd = 2 * surfaces[opt.stopIdx].sd / Math.abs(fo.pupilMag);
+    else if (opt.apertureMode === 'fnoinf') epd = Math.abs(fo.efl) / opt.fno;   // Zemax「Image Space F/#」：EFL/EPD，有限共轭也按这个定入瞳
     else if (finite) {
       // opt.fno 是像方「工作 F/#」：F/# = 1/(2·|u'|)，u' 与入瞳直径成正比，一步反解
       var yEP = fo.zEP - zObj;                       // 单位斜率光线在入瞳面的高度

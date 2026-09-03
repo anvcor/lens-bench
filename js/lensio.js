@@ -164,7 +164,7 @@ var LENSIO = (function () {
     var out = { rows: [], stop: 0, warn: [], zoo: {}, _zmx: true };
     var surfs = [], cur = null, i, j;
     var ftyp = null, xfln = [], yfln = [], vdx = [], vdy = [], vcx = [], vcy = [];
-    var waves = [], pwav = 1, fnum = null, enpd = null, unit = 'MM';
+    var waves = [], pwav = 1, fnum = null, fnumType = 0, enpd = null, unit = 'MM';
     var mnum = 0, ltt = {}, mce = [];
 
     for (i = 0; i < lines.length; i++) {
@@ -185,13 +185,15 @@ var LENSIO = (function () {
         if (k === 'PARM') { cur.parm[+tk[1]] = num(tk[2]); continue; }
         if (k === 'STOP') { cur.isStop = true; continue; }
         if (k === 'FLAP' || k === 'SQAP') { cur.ap = num(tk[2]); continue; }
+        // 厚度「补偿器」解：本面厚度 = 和 − 参考面厚度（内对焦镜头常用，保持总长不变）
+        if (k === 'TCOM') { cur.tcom = { ref: +tk[1], sum: num(tk[2]) }; continue; }
         continue;
       }
       if (k === 'MODE' && (tk[1] || '').toUpperCase() !== 'SEQ') out.warn.push('这是非序列 (' + tk[1] + ') 文件，只按序列面读取。');
       else if (k === 'NAME') out.title = ln.replace(/^NAME\s*/i, '');
       else if (k === 'UNIT') unit = (tk[1] || 'MM').toUpperCase();
       else if (k === 'FTYP') ftyp = tk.slice(1).map(num);
-      else if (k === 'FNUM') fnum = num(tk[1]);
+      else if (k === 'FNUM') { fnum = num(tk[1]); fnumType = tk.length > 2 ? (parseInt(tk[2], 10) || 0) : 0; }
       else if (k === 'ENPD') enpd = num(tk[1]);
       else if (k === 'XFLN') xfln = tk.slice(1).map(num);
       else if (k === 'YFLN') yfln = tk.slice(1).map(num);
@@ -237,17 +239,23 @@ var LENSIO = (function () {
       } else if (s.type !== 'STANDARD') {
         out.warn.push('第 ' + i + ' 面类型 ' + s.type + ' 本页不支持，已按球面处理。');
       }
+      if (s.tcom) (out.solves = out.solves || []).push({ surf: s.n, ref: s.tcom.ref, sum: s.tcom.sum });
       if (s.isStop) out.stop = out.rows.length;
       out.rows.push(r);
     }
 
+    if (out.solves && out.solves.length)
+      out.warn.push('读到 ' + out.solves.length + ' 个厚度补偿器解 (TCOM)：'
+        + out.solves.map(function (s2) { return 'S' + s2.surf + ' = ' + s2.sum + ' − S' + s2.ref; }).join('、')
+        + '。这是内对焦的写法，各结构按解重算厚度（总长保持不变），而不是照抄文件里那一份。');
     if (hasAp && (vcy.length || vcx.length))
       out.warn.push('文件里的固定半口径 / 浮动通光 (FLAP) 没有导入成硬光阑：Zemax 的浮动通光逐结构重算，'
         + '存下来的只是当前结构那一份，套到近摄结构会把边缘光线全挡掉。通光瞳完全由渐晕系数 (VDY/VCY) 决定，'
         + 'Zemax 自己算 MTF 也是这么做的。');
 
     // ---- 孔径 / 波长 / 视场 ----
-    if (fnum) out.fno = fnum; else if (enpd) out.epd = enpd;
+    // FNUM 第二个数是孔径类型：0 = Image Space F/#（EFL/EPD，有限共轭也按无限远定义）；1 = Paraxial Working F/#
+    if (fnum) { out.fno = fnum; out.fnoInf = (fnumType === 0); } else if (enpd) out.epd = enpd;
     out.wl = []; out.wtw = [];
     for (i = 0; i < nW && i < waves.length; i++) { out.wl.push(+waves[i].nm.toFixed(4)); out.wtw.push(waves[i].w); }
     out.ref = Math.min(Math.max(pwav, 1), out.wl.length || 1);
@@ -394,6 +402,18 @@ var LENSIO = (function () {
         Object.keys(z[kk]).forEach(function (fi) { arr[+fi] = z[kk][fi][i]; });
         c.vig[kk.toLowerCase()] = arr;
       });
+      // 厚度补偿器解（Zemax TCOM）：本面厚度 = 和 − 参考面厚度。
+      // 文件里存的 DISZ 只是「当前结构」那一份，别的结构必须按解重算，
+      // 否则内对焦镜头会被当成整组前伸，总长和后组位置全错。
+      if (sq.solves && sq.solves.length) {
+        var baseT = (sq.rows || []).map(function (r) { return parseFloat(r.T) || 0; });
+        sq.solves.forEach(function (sv) {
+          var ri = sv.surf - 1, rr = sv.ref - 1;
+          if (ri < 0 || ri >= baseT.length || rr < 0 || rr >= baseT.length) return;
+          var tRef = (c.thi[rr] != null) ? c.thi[rr] : baseT[rr];
+          c.thi[ri] = sv.sum - tRef;
+        });
+      }
       if (!c.vig && sq.vig) c.vig = sq.vig;
       if (c.obj === null && sq.objDist != null) c.obj = sq.objDist;
       if (c.obj === null || !(c.obj < 1e7)) c.obj = Infinity;   // 1e10/1e13/1e15 这类写法都是无限远
@@ -435,7 +455,7 @@ var LENSIO = (function () {
       tx: rowsToText(s.rows),
       stop: Math.min((s.stop || 0) + 1, s.rows.length),
       fno: s.fno || s.epd || 5,
-      apmode: s.fno ? 'fno' : (s.epd ? 'epd' : 'fno'),
+      apmode: s.fno ? (s.fnoInf ? 'fnoinf' : 'fno') : (s.epd ? 'epd' : 'fno'),
       fmode: s.fieldMode === 'angle' ? 'angle' : 'height',
       fov: (s.fields && s.fields.length) ? s.fields[s.fields.length - 1] : 20,
       freqs: '10, 30, 80', aim: false,
