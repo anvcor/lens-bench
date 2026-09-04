@@ -95,6 +95,8 @@ input:focus,select:focus,textarea:focus{outline:2px solid var(--accent);outline-
 .badge{font-family:"IBM Plex Mono",monospace;font-variant-numeric:tabular-nums;font-size:10.5px;
   padding:2px 7px;border-radius:5px;background:var(--panel-3);color:var(--ink-2);white-space:nowrap}
 .badge.live{background:var(--accent-soft);color:var(--accent)}
+.badge.rev{background:var(--warn-bg);color:var(--warn);border-color:var(--warn-line)}   /* 逆向 */
+.badge.pat{background:var(--accent-soft);color:var(--accent)}                            /* 专利 */
 
 /* ---------- LDM 表 ---------- */
 .ldmbar{display:flex;flex-direction:column;gap:6px;padding:8px 10px;border-bottom:1px solid var(--line-2);flex:0 0 auto}
@@ -288,7 +290,7 @@ table.data tbody tr:hover{background:var(--panel-2)}
     <!-- ---- 左：镜头数据管理器 + 波长 ---- -->
     <div class="leftcol">
     <section class="card">
-      <header><h2>镜头数据管理器</h2><span class="grow"></span><span class="badge" id="surfBadge">—</span></header>
+      <header><h2>镜头数据管理器</h2><span class="grow"></span><span class="badge" id="originBadge" hidden></span><span class="badge" id="surfBadge">—</span></header>
       <div class="ldmbar">
         <div class="ldmrow">
           <label class="cfgsel"><span>品牌</span><select id="brand" aria-label="镜头品牌"></select></label>
@@ -303,6 +305,7 @@ table.data tbody tr:hover{background:var(--panel-2)}
             <button class="btn" id="delBtn" type="button">删除面</button>
             <button class="btn" id="stopBtn" type="button">设为光阑</button>
             <button class="btn" id="focusBtn" type="button">最佳对焦</button>
+            <button class="btn" id="vigBtn" type="button" title="按镜片的真实通光重算本结构的渐晕系数（CODE V 的 SET VIGNETTING）">一键渐晕</button>
           </div>
           <span class="grow"></span>
           <div class="btngrp">
@@ -320,7 +323,7 @@ table.data tbody tr:hover{background:var(--panel-2)}
       </div>
       <div id="msgs"></div>
       <div class="body" style="border-top:1px solid var(--line-2)">
-        <p class="note"><b>编辑</b>：直接改单元格；点「表面编号」格可把该面设为光阑。<b>多重结构</b>：.seq 里的 <code>ZOO</code> 记录（结构数、各结构标题、逐结构的 FNO / 面厚度 / 曲率 / 渐晕系数）会读进来，用工具栏「结构」下拉切换，<b>随结构变化的格子在表里标了色</b>，改这些格子会写回当前结构。物面厚度（<code>ZOO THI S0</code>）落到顶栏「物距」，因此近摄结构按<b>有限共轭</b>追迹：光线从物点发出而非平行入射，F/# 用像方工作 F/#（由近轴边缘光线角 1/(2|u′|) 反解入瞳），状态栏 RED 给出放大倍率。<b>渐晕</b>：若 .seq 带 <code>SETVIG</code> 存的 VUY/VLY/VUX/VLX，瞳区间直接按它逐视场插值取，不再靠通光孔径反推——很多 .seq 只在像面写 CIR，镜片没有孔径数据，这时这张表是唯一依据。<br><b>撤销</b>：所有改动（含「最佳对焦」写入的离焦量、插删面、波长预设、粘贴）都可 <b>撤销 / 重做</b>，快捷键 Ctrl+Z / Ctrl+Shift+Z（光标停在输入框里时让给浏览器的文本撤销）；<b>恢复初始</b>回到刚载入示例或刚导入 .seq 时的状态，这一步本身也能撤销。<b>粘贴</b>：从 Excel / 专利表格复制多行多列，选中起始格 Ctrl+V 即整块填入（列顺序 Y 半径→厚度→玻璃→半孔径→圆锥→A4 A6 A8…），行数不够会自动补。<b>非球面</b>：A4 A6 A8… 每项一列，列不够时最右会自动多出一列；表格可左右滚动。<b>材料</b>：直接写牌号，内置 <b id="glassN">—</b> 种厂商目录玻璃（SCHOTT / OHARA / HOYA / HIKARI / CDGM / SUMITA / NHG / CHINA / SPECIAL 等 19 家），输入时会自动补全；重名可用 <b>牌号_目录</b> 指定（<b>H-ZF72A_CDGM</b>、<b>NBFD25_HOYA</b>、<b>SBSL7_OHARA</b>）。查不到的写 <b>nd/vd</b>（如 <b>1.7292/54.7</b>）或 6 位 <b>MIL 代码</b>（如 <b>517640</b>）按模型玻璃算；留空为空气。<b>导入</b>：<b>CODE V .seq</b> 读面数据 / CIR 通光 / ASP 非球面 / STO / FNO / WL·WTW·REF / YRI·YAN / SETVIG 渐晕 / ZOO 多重结构；<b>Zemax .zmx</b>（UTF-16 或 UTF-8）读 SURF·CURV·DISZ·GLAS·CONI·PARM / STOP / FNUM·ENPD / FTYP·YFLN / WAVM·PWAV / VDYN·VCYN 渐晕 / MNUM·THIC·APER·FVCY 多重结构。两种格式走的是同一份解析代码，命令行批量转换用的也是它。</p>
+        <p class="note"><b>编辑</b>：直接改单元格；点「表面编号」格可把该面设为光阑。<b>多重结构</b>：.seq 里的 <code>ZOO</code> 记录（结构数、各结构标题、逐结构的 FNO / 面厚度 / 曲率 / 渐晕系数）会读进来，用工具栏「结构」下拉切换，<b>随结构变化的格子在表里标了色</b>，改这些格子会写回当前结构。物面厚度（<code>ZOO THI S0</code>）落到顶栏「物距」，因此近摄结构按<b>有限共轭</b>追迹：光线从物点发出而非平行入射，F/# 用像方工作 F/#（由近轴边缘光线角 1/(2|u′|) 反解入瞳），状态栏 RED 给出放大倍率。<b>渐晕</b>：若文件带 <code>SETVIG</code> / <code>VDYN·VCYN</code> 存的 VUY/VLY/VUX/VLX，瞳区间直接按它逐视场插值取，不再靠通光孔径反推——很多 .seq 只在像面写 CIR，镜片没有孔径数据，这时这张表是唯一依据。<b>一键渐晕</b>：文件存的系数常常和它自己的通光对不上（Zemax 的浮动通光逐结构重算，系数却只存了一份），画出来就是光线穿出镜片。按这个键，按 CODE V 的 <code>SET VIGNETTING</code> 重算<b>当前结构</b>的渐晕系数——把 ±Y / ±X 四条边缘光线二分推到「刚好通过全部真实通光」为止，21 个视场点，能收紧也能放开。判据只认<b>写死的</b>通光（CODE V 的 CIR、Zemax 的固定 DIAM 与浮动通光 FLAP）；自动算出来的 DIAM 是光线包络反推的，不是物理孔径，不参与；<b>光阑面也不参与</b>——归一化瞳坐标 ±1 定义的就是它的边缘，它不会渐晕自己。结果直接覆盖当前结构的渐晕表，<b>Ctrl+Z 退回文件值</b>。拿带 SETVIG 的 CODE V 文件反过来校验，本页重算的系数与文件自带的差 ≤ 0.03（归一化瞳坐标，满瞳半宽 = 1）。<br><b>撤销</b>：所有改动（含「最佳对焦」写入的离焦量、插删面、波长预设、粘贴）都可 <b>撤销 / 重做</b>，快捷键 Ctrl+Z / Ctrl+Shift+Z（光标停在输入框里时让给浏览器的文本撤销）；<b>恢复初始</b>回到刚载入示例或刚导入 .seq 时的状态，这一步本身也能撤销。<b>粘贴</b>：从 Excel / 专利表格复制多行多列，选中起始格 Ctrl+V 即整块填入（列顺序 Y 半径→厚度→玻璃→半孔径→圆锥→A4 A6 A8…），行数不够会自动补。<b>非球面</b>：A4 A6 A8… 每项一列，列不够时最右会自动多出一列；表格可左右滚动。<b>材料</b>：直接写牌号，内置 <b id="glassN">—</b> 种厂商目录玻璃（SCHOTT / OHARA / HOYA / HIKARI / CDGM / SUMITA / NHG / CHINA / SPECIAL 等 19 家），输入时会自动补全；重名可用 <b>牌号_目录</b> 指定（<b>H-ZF72A_CDGM</b>、<b>NBFD25_HOYA</b>、<b>SBSL7_OHARA</b>）。查不到的写 <b>nd/vd</b>（如 <b>1.7292/54.7</b>）或 6 位 <b>MIL 代码</b>（如 <b>517640</b>）按模型玻璃算；留空为空气。<b>导入</b>：<b>CODE V .seq</b> 读面数据 / CIR 通光 / ASP 非球面 / STO / FNO / WL·WTW·REF / YRI·YAN / SETVIG 渐晕 / ZOO 多重结构；<b>Zemax .zmx</b>（UTF-16 或 UTF-8）读 SURF·CURV·DISZ·GLAS·CONI·PARM / STOP / FNUM·ENPD / FTYP·YFLN / WAVM·PWAV / VDYN·VCYN 渐晕 / MNUM·THIC·APER·FVCY 多重结构。两种格式走的是同一份解析代码，命令行批量转换用的也是它。</p>
       </div>
     </section>
 
@@ -435,11 +438,12 @@ table.data tbody tr:hover{background:var(--panel-2)}
           <select id="cmpN" class="w-s"><option value="9">9</option><option value="11" selected>11</option>
             <option value="15">15</option><option value="21">21</option></select></label>
         <div class="fld chk"><label><input id="cmpFocus" type="checkbox"> 各自最佳对焦</label></div>
+        <div class="fld chk"><label><input id="cmpVig" type="checkbox"> 按通光重算渐晕</label></div>
       </div>
 
       <div class="cmpgrid">
       <section class="card">
-        <header><h2><span class="cmptag a">A</span>镜头 A</h2><span class="grow"></span><span class="badge" id="cmpLayBadgeA">—</span></header>
+        <header><h2><span class="cmptag a">A</span>镜头 A</h2><span class="grow"></span><span class="badge" id="cmpOriginA" hidden></span><span class="badge" id="cmpLayBadgeA">—</span></header>
         <div class="ldmbar">
           <div class="ldmrow">
             <label class="cfgsel"><span>品牌</span><select id="cmpBrandA" aria-label="镜头 A 品牌"></select></label>
@@ -454,7 +458,7 @@ table.data tbody tr:hover{background:var(--panel-2)}
         <div class="cmpstat" id="cmpStatA"></div>
       </section>
       <section class="card">
-        <header><h2><span class="cmptag b">B</span>镜头 B</h2><span class="grow"></span><span class="badge" id="cmpLayBadgeB">—</span></header>
+        <header><h2><span class="cmptag b">B</span>镜头 B</h2><span class="grow"></span><span class="badge" id="cmpOriginB" hidden></span><span class="badge" id="cmpLayBadgeB">—</span></header>
         <div class="ldmbar">
           <div class="ldmrow">
             <label class="cfgsel"><span>品牌</span><select id="cmpBrandB" aria-label="镜头 B 品牌"></select></label>
@@ -480,7 +484,8 @@ table.data tbody tr:hover{background:var(--panel-2)}
           <p class="note"><b>A 用冷色、B 用暖色</b>，同一颗镜头里颜色深浅区分频率；<b>实线 = 子午 T，虚线 = 弧矢 S</b>（与主页面同一约定）。
           两边共用光谱、频率、算法、瞳面网格和视场点数，<b>孔径 / 视场定义 / 渐晕仍各自按文件走</b>——这是镜头本身的规格，强行统一反而不是那颗镜头了。
           横轴选「实像高」时两颗按各自的毫米数画，画幅不同的镜头这么比才有意义；选「归一化视场」则各自压到 0~1，比的是相对边缘表现。
-          <b>各自最佳对焦</b>勾上后，每颗镜头各自解一次轴上最小 RMS 离焦再算 MTF——文件后焦有零头时（比如取整过的空气间隔）用它比才公平。</p>
+          <b>各自最佳对焦</b>勾上后，每颗镜头各自解一次轴上最小 RMS 离焦再算 MTF——文件后焦有零头时（比如取整过的空气间隔）用它比才公平。
+          <b>按通光重算渐晕</b>勾上后，两颗镜头各自按自己的真实通光重跑一次 SETVIG，再拿重算过的瞳去算 MTF——文件自带的渐晕系数松紧不一致时，用它比才是同一把尺子。</p>
         </div>
       </section>
 
