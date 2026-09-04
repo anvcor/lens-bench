@@ -1,9 +1,11 @@
 <!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>镜头 MTF 仿真台</title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
 <style>
+/* 自托管字体：Archivo 可变字重 + IBM Plex Mono 400/500/600，latin 子集 */
+@font-face{font-family:Archivo;font-style:normal;font-display:swap;font-weight:100 900;src:url(fonts/archivo-latin-wght-normal.woff2) format('woff2-variations');unicode-range:U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD}
+@font-face{font-family:'IBM Plex Mono';font-style:normal;font-display:swap;font-weight:400;src:url(fonts/ibm-plex-mono-latin-400-normal.woff2) format('woff2');unicode-range:U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD}
+@font-face{font-family:'IBM Plex Mono';font-style:normal;font-display:swap;font-weight:500;src:url(fonts/ibm-plex-mono-latin-500-normal.woff2) format('woff2');unicode-range:U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD}
+@font-face{font-family:'IBM Plex Mono';font-style:normal;font-display:swap;font-weight:600;src:url(fonts/ibm-plex-mono-latin-600-normal.woff2) format('woff2');unicode-range:U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD}
 :root{
   --bg:#EDF0F3; --panel:#FFFFFF; --panel-2:#F4F7F9; --panel-3:#E7EDF0; --row-alt:#EDF4F6;
   --ink:#111A20; --ink-2:#4E606C; --ink-3:#7F909B;
@@ -224,6 +226,7 @@ table.data tbody tr:hover{background:var(--panel-2)}
 .status .it.key i{color:var(--accent)}
 .status .grow{flex:1 1 auto;border:0}
 .status .it.perf{border-right:0;border-left:1px solid var(--line-2);color:var(--ink-2)}
+.status .it.visits{border-right:0;border-left:1px solid var(--line-2);color:var(--ink-2)}
 
 @media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
 </style>
@@ -552,11 +555,13 @@ table.data tbody tr:hover{background:var(--panel-2)}
       <span class="it"><b>最大像高</b><i id="stImg">—</i></span>
       <span class="it"><b>轴上 RMS</b><i id="stRms">—</i></span>
       <span class="grow"></span>
+      <span class="it visits" title="本站累计访问量 / 独立访客，由 vercount 统计"><b>访问</b><i id="vercount_value_site_pv">—</i><b style="margin-left:10px">访客</b><i id="vercount_value_site_uv">—</i></span>
       <span class="it perf" id="stPerf">—</span>
     </div>
   </div>
 </div>
 
+<script defer src="https://events.vercount.one/js"></script>
 <script src="data/index.js"></script>
 <script src="js/glassdb.js"></script>
 <script src="js/lensio.js"></script>
