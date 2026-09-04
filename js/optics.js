@@ -12,7 +12,8 @@ var OPT = (function () {
      每一条都要能独立核对：数值来源见 README，并用设计本身反解验证过
      （代进去后像面正好落在轴上焦点、且轴上 RMS 落到衍射量级，别的取值都不成立）。 */
   var GNEW = {
-    nbfd26: [1.83401, 25.97, 'HOYA']        // Sony FE 50mm F1.2 GM 用；HOYA20251120 目录
+    nbfd26: [1.83401, 25.97, 'HOYA'],       // Sony FE 50mm F1.2 GM 用；HOYA20251120 目录
+    taf48:  [1.79091, 48.09, 'HOYA']        // Sony FE 35mm F1.4 GM 用；HOYA20260601 目录
   };
   var CATALOG = {
     'air': null,
@@ -279,6 +280,13 @@ var OPT = (function () {
     if (CATALOG[key]) {
       var g = CATALOG[key];
       return { fn: makeGlass(g[0], g[1]), label: t.toUpperCase() + ' (' + g[0].toFixed(4) + '/' + g[1].toFixed(1) + ')' };
+    }
+    // 牌号末尾的「-数字」是目录里的级别 / 退火档（CDGM 的 D-ZPK5-25 之类），
+    // 光学常数与基础牌号一致，去掉后缀再查一次，按近似替代报出来
+    var mg = /^(.+?)-\d+$/.exec(t);
+    if (mg) {
+      var gr = gdbResolve(gdbKey(mg[1]), '');
+      if (gr) return gdbLabel({ n: gr.n, c: gr.c, f: gr.f, t: gr.t, s: gr.s, sub: 1 }, t);
     }
     if (GNEW[key]) {
       var gn = GNEW[key];
@@ -787,6 +795,76 @@ var OPT = (function () {
     return { lo: edge(-1), hi: edge(1) };
   }
 
+  /* ---------- SETVIG：由真实通光反算渐晕系数 ----------
+     照 CODE V 的 SET VIGNETTING 做：逐视场把四条边缘参考光线（±Y 子午、±X 弧矢）
+     沿归一化瞳坐标二分，推到「刚好通过全部真实通光」的位置。往里推了多少就是渐晕系数：
+       上边缘 = 1 − VUY      下边缘 = −1 + VLY      （X 方向同理）
+     所以 VUY = 1 − hi、VLY = 1 + lo，和 vigSpan 用的是同一套定义，直接对得上。
+
+     判据只认「写死的」通光：CODE V 的 CIR（面上的 sd）、Zemax 的固定 DIAM / 浮动通光 FLAP
+     （由 opt.sdAp 带进来）。Zemax 自动算出来的 DIAM 是按光线包络反推的，拿它判渐晕
+     等于自己挡自己，所以不算在内。
+     光阑面同样不参与：归一化坐标 ±1 定义的就是它的边缘，它不可能把自己渐晕掉。
+
+     lim[] 记下每个视场子午方向上、把光线挡住的那个面（0 基），用来告诉用户是谁在限制。
+     ------------------------------------------------------------------ */
+  function setVig(sys, opt) {
+    var S = sys.surfaces, lam = opt.lambdas[opt.primary || 0].nm / 1000;
+    var sdAp = (opt.sdAp && opt.sdAp.length === S.length) ? opt.sdAp : null;
+    var stopI = sys.stopIdx, ap = [], nAp = 0, i;
+    for (i = 0; i < S.length; i++) {
+      var a = (i === stopI) ? 0 : (S[i].sd || (sdAp && sdAp[i]) || 0);
+      ap.push(a || 0); if (a) nAp++;
+    }
+    if (!nAp) return null;                                   // 一个真实通光都没有，无从判起
+
+    /* 挡住这条光线的面（0 基）；通得过返回 −1；根本追不出来返回 −2 */
+    function blockAt(th, ux, uy) {
+      var q = pupilXY(sys, th, ux, uy, lam);
+      if (!q) return -2;
+      var st = startRay(sys, th, q.ex, q.ey);
+      var r = traceRay(sys, st.P, st.D, lam, true, undefined, true);   // 收点，绕开内建通光自己判
+      if (!r.ok) return (r.blockedAt === undefined || r.blockedAt === null) ? -2 : r.blockedAt;
+      for (var k = 1; k < r.pts.length && k - 1 < ap.length; k++) {
+        var a2 = ap[k - 1]; if (!a2) continue;
+        var x = r.pts[k][0], y = r.pts[k][1];
+        if (Math.sqrt(x * x + y * y) > a2 * 1.0000001) return k - 1;
+      }
+      return -1;
+    }
+
+    /* 沿一条轴求「能全程通过」的归一化瞳区间 */
+    function span(th, X) {
+      var f = function (u) { return blockAt(th, X ? u : 0, X ? 0 : u) === -1; };
+      var probe = [0, 0.2, -0.2, 0.45, -0.45, 0.7, -0.7, 0.9, -0.9], seed = null;
+      for (var j = 0; j < probe.length; j++) if (f(probe[j])) { seed = probe[j]; break; }
+      if (seed === null) return null;                        // 整条轴都过不去 —— 全渐晕
+      var lim = -1;
+      var edge = function (dir) {
+        if (f(dir)) return dir;                              // 一直到满瞳都没挡
+        var good = seed, bad = dir;
+        for (var k = 0; k < 24; k++) { var m = (good + bad) / 2; if (f(m)) good = m; else bad = m; }
+        var b = blockAt(th, X ? bad : 0, X ? 0 : bad);
+        if (b >= 0) lim = b;
+        return good;
+      };
+      var hi = edge(1), lo = edge(-1);
+      return { lo: lo, hi: hi, lim: lim };
+    }
+
+    var ths = opt.vigFields || [], out = { th: [], vuy: [], vly: [], vux: [], vlx: [], lim: [], nAp: nAp, dark: 0 };
+    for (i = 0; i < ths.length; i++) {
+      var th = ths[i], sy = span(th, false), sx = span(th, true);
+      out.th.push(th);
+      if (!sy) { out.vuy.push(1); out.vly.push(1); out.dark++; out.lim.push(-1); }
+      else { out.vuy.push(clamp01(1 - sy.hi)); out.vly.push(clamp01(1 + sy.lo)); out.lim.push(sy.lim); }
+      if (!sx) { out.vux.push(1); out.vlx.push(1); }
+      else { out.vux.push(clamp01(1 - sx.hi)); out.vlx.push(clamp01(1 + sx.lo)); }
+    }
+    return out;
+    function clamp01(v) { return Math.max(0, Math.min(1.999, v)); }
+  }
+
   /* 主光线（过光阑中心那条）在像面的高度 —— CODE V 的 YRI / Zemax 的 real image height。
      参考光线按惯例不受通光孔径限制：边缘视场上光阑中心那条常常已经被渐晕掉了，
      但视场定义仍以它为准，所以被挡时放开孔径只取几何落点。 */
@@ -1035,18 +1113,49 @@ var OPT = (function () {
       }
     }
 
+    /* 每面的画图半径。优先级：
+         面上写死的通光 (CODE V CIR) → 文件里的画图半口径 (Zemax DIAM/FLAP) → 光线包络反推。
+       最后再过一道「相邻两面不许互相穿透」的钳位：实际设计里镜片间隙最小就是 0，
+       靠光线包络反推的半径在近摄结构会被光线推大，强曲率面的矢高就插进邻面里。 */
+    var sdD = (opt.sdDraw && opt.sdDraw.length === S.length) ? opt.sdDraw : null;
+    var sdA = (opt.sdAp && opt.sdAp.length === S.length) ? opt.sdAp : null;
+    var draw = new Array(S.length);
+    for (var d0 = 0; d0 < S.length; d0++) {
+      var hard = S[d0].sd || (sdA && sdA[d0]) || 0;       // 写死的通光：CIR / 固定 DIAM / FLAP
+      var fromFile = hard || (sdD && sdD[d0]) || 0;
+      draw[d0] = fromFile || Math.max(maxR[d0] * 1.06, h * 0.3);
+      // 自动算出来的半口径不是物理孔径：Zemax 存的是它自己那一份光线包络（光阑面上是近轴光瞳半径），
+      // 本页的光线只要走得更远，就得按本页的包络画，否则会画成「光线擦着镜片外面过去」。
+      // 写死通光的面不动 —— 那是真挡光的，光线本来就被切在孔径上了。
+      if (!hard && fromFile) draw[d0] = Math.max(draw[d0], maxR[d0] * 1.002);
+    }
+    for (var d1 = 0; d1 + 1 < S.length; d1++) {
+      var A = S[d1], B = S[d1 + 1], zA = zv[d1], zB = zv[d1 + 1];
+      var want = Math.max(draw[d1], draw[d1 + 1]);
+      var gapAt = function (r) { return (zB + safeSag(B, r)) - (zA + safeSag(A, r)); };
+      if (gapAt(want) >= 0) continue;                       // 到最外圈都没穿模
+      var N2 = 64, lo = 0, hi = want;
+      for (var d2 = 1; d2 <= N2; d2++) {                    // 先粗扫出第一次穿模的区间
+        var rr = want * d2 / N2;
+        if (gapAt(rr) < 0) { hi = rr; lo = want * (d2 - 1) / N2; break; }
+      }
+      for (var d3 = 0; d3 < 30; d3++) { var mm = (lo + hi) / 2; if (gapAt(mm) >= 0) lo = mm; else hi = mm; }
+      draw[d1] = Math.min(draw[d1], lo);
+      draw[d1 + 1] = Math.min(draw[d1 + 1], lo);
+    }
+
     var elems = [];
     for (var i2 = 0; i2 < S.length; i2++) {
       if (!S[i2].isGlass || i2 + 1 >= S.length) continue;
-      var sdA = S[i2].sd || Math.max(maxR[i2] * 1.06, h * 0.3);
-      var sdB = S[i2 + 1].sd || Math.max(maxR[i2 + 1] * 1.06, h * 0.3);
+      var sdA = draw[i2];
+      var sdB = draw[i2 + 1];
       var sd = Math.max(sdA, sdB);
       elems.push({
         front: profile(S[i2], zv[i2], sdA, sd), back: profile(S[i2 + 1], zv[i2 + 1], sdB, sd), sd: sd,
         cemented: i2 > 0 && S[i2 - 1].isGlass
       });
     }
-    return { elements: elems, bundles: bundles, maxR: maxR, fields: fieldsToDraw, zEnter: zEnter, byWvl: byWvl, sdStop: sys.sdStop };
+    return { elements: elems, bundles: bundles, maxR: maxR, drawSd: draw, fields: fieldsToDraw, zEnter: zEnter, byWvl: byWvl, sdStop: sys.sdStop };
   }
 
   function safeSag(s, r) {
@@ -1074,7 +1183,7 @@ var OPT = (function () {
     paraxFromObject: paraxFromObject, pupilSpan: pupilSpan,
     buildSystem: buildSystem, firstOrder: firstOrder, traceRay: traceRay, launch: launch, aim: aim,
     mtfVsField: mtfVsField, diffractionMTF: diffractionMTF, angleForHeight: angleForHeight, layoutGeometry: layoutGeometry, pupilSpan: pupilSpan,
-    pupilGrid: pupilGrid, sag: sag, pupilXY: pupilXY, aberrations: aberrations, chiefHeight: chiefHeight, rayFan: rayFan
+    setVig: setVig, pupilGrid: pupilGrid, sag: sag, pupilXY: pupilXY, aberrations: aberrations, chiefHeight: chiefHeight, rayFan: rayFan
   };
 })();
 

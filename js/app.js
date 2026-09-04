@@ -15,6 +15,21 @@
      lenses/meta.json 的 order 排好），没标品牌的归到最后一组。 */
   var OTHERB = '其他 / 未分类';
   function brandOf(e) { return e.brand || OTHERB; }
+  function idxEntry(id) {
+    for (var i = 0; i < LENSDB.index.length; i++) if (LENSDB.index[i].id === id) return LENSDB.index[i];
+    return null;
+  }
+  /* 数据来源标记（逆向 / 专利）。挂在目录条目上，不在镜头 JSON 里——
+     同一颗镜头可能同时有逆向和专利两份数据，靠这个标签在下拉里区分。 */
+  var CURORIGIN = null;
+  function originBadge(el, e) {
+    if (!el) return;
+    if (!e || !e.origin) { el.hidden = true; el.textContent = ''; el.className = 'badge'; return; }
+    el.hidden = false;
+    el.textContent = e.origin;
+    el.className = 'badge ' + (e.origin === '专利' ? 'pat' : 'rev');
+    el.title = e.originNote || e.origin;
+  }
   function brandList() {
     var out = [];
     LENSDB.index.forEach(function (e) { var b = brandOf(e); if (out.indexOf(b) < 0) out.push(b); });
@@ -30,7 +45,8 @@
   function renderLensList(brand) {
     var sel = $('ex');
     sel.innerHTML = LENSDB.index.filter(function (e) { return brandOf(e) === brand; }).map(function (e) {
-      return '<option value="' + esc(e.id) + '">' + esc(e.name) + (e.sub ? ' · ' + esc(e.sub) : '') + '</option>';
+      return '<option value="' + esc(e.id) + '">' + esc(e.name) +
+        (e.origin ? '（' + esc(e.origin) + '）' : '') + (e.sub ? ' · ' + esc(e.sub) : '') + '</option>';
     }).join('');
   }
   /* 把两个下拉对到某颗镜头上（不触发载入） */
@@ -63,6 +79,7 @@
           '（本地双击打开 html 时浏览器会拦截 fetch，请用单文件版，或把目录挂到本地服务器上）']);
         if (done) done(err); return;
       }
+      CURORIGIN = idxEntry(id);
       applyLens(L);
       if (busy) { histBase(); schedule(0); }
       if (done) done(null, L);
@@ -92,7 +109,10 @@
   var DASH = ['', '5 2.5', '1.6 2.4', '8 2.5 1.6 2.5', '11 3', '2 2 7 2'];
 
   var state = { rows: [], stop: 0, sel: 0, wl: wlSet('p5'), pri: 1,
-                cfgs: null, cfg: 0, vigH: null };   // cfgs = 多重结构；vigH = 渐晕表对应的像高列表
+                cfgs: null, cfg: 0, vigH: null, sdDraw: null, sdAp: null, vigAuto: null };
+  // cfgs = 多重结构；vigH = 渐晕表对应的像高列表；sdDraw = 画图半口径；
+  // sdAp = 真实通光（只含写死的 CIR / 固定 DIAM / FLAP，「一键渐晕」按它判）；
+  // vigAuto = 各结构自己算出来的渐晕表 { 结构号: {f, vuy, vly, vux, vlx, note} }，f 是视场占比
   function blankRow() { return { R: '', T: '', mat: '', sd: '', k: '', asph: '' }; }
   var NUMRE = /^[-+]?(\d+\.?\d*|\.\d+)([eE][-+]?\d+)?$/;
 
@@ -377,7 +397,7 @@
       rows: state.rows.map(function (r) { return [r.R, r.T, r.mat, r.sd, r.k, r.asph]; }),
       stop: state.stop, sel: state.sel, pri: state.pri,
       wl: state.wl.map(function (w) { return [w.nm, w.w, w.c]; }),
-      cfg: state.cfg, cfgs: state.cfgs, vigH: state.vigH,
+      cfg: state.cfg, cfgs: state.cfgs, vigH: state.vigH, vigAuto: state.vigAuto,
       ctl: c
     });
   }
@@ -389,6 +409,7 @@
     state.stop = o.stop; state.sel = o.sel; state.pri = o.pri;
     state.wl = o.wl.map(function (a) { return { nm: a[0], w: a[1], c: a[2] }; });
     state.cfgs = o.cfgs || null; state.cfg = o.cfg || 0; state.vigH = o.vigH || null;
+    state.vigAuto = o.vigAuto || null;
     HCTRL.forEach(function (k) { $(k).value = o.ctl[k]; });
     $('aim').checked = !!o.ctl.aim;
     syncApMode(); syncFMode(); renderCfg(); renderLDE(); renderWL();
@@ -428,7 +449,7 @@
     histRecord();
     var st = readState();
     var p = OPT.parsePrescription(st.tx);
-    var msgs = LENSMSG.concat(p.warnings);
+    var msgs = LENSMSG.concat(p.warnings).concat(PENDMSG); PENDMSG = [];
     if (p.surfaces.length < 2) {
       showMsgs(msgs.concat(['至少需要 2 个面才能构成系统。']));
       $('surfBadge').textContent = p.surfaces.length + ' 面';
@@ -440,7 +461,7 @@
       apertureMode: st.apmode, fno: st.fno, epd: st.fno, rayAiming: st.aim,
       maxFov: st.fov, defocus: st.defoc, nGrid: st.ngrid, nField: st.nfield,
       freqs: st.freqs, nRayViz: st.nviz, nFieldViz: st.nfviz, colorBy: st.colorby, mtfMode: st.mtfmode,
-      objDist: st.objd
+      objDist: st.objd, sdDraw: state.sdDraw, sdAp: state.sdAp
     };
     var sys = OPT.buildSystem(p.surfaces, opt);
     // .seq 里 SETVIG 存下来的渐晕系数：把视场（像高或角度）换算成本页用的视场角后挂到系统上
@@ -453,6 +474,17 @@
       });
       sys.vig = { th: thv, vuy: vsrc.vuy, vly: vsrc.vly || vsrc.vuy,
                   vux: vsrc.vux || vsrc.vuy, vlx: vsrc.vlx || vsrc.vux || vsrc.vuy };
+    }
+    // 「一键渐晕」算出来的表压过文件表。存的是视场占比，不是角度 ——
+    // 改了最大视场 / 视场定义方式之后照样对得上。
+    var vAuto = state.vigAuto && state.vigAuto[state.cfg];
+    if (vAuto && vAuto.f && vAuto.f.length === vAuto.vuy.length) {
+      var lamA = opt.lambdas[opt.primary].nm / 1000;
+      sys.vig = { th: vAuto.f.map(function (fr) {
+                    return st.fmode === 'height' ? OPT.angleForHeight(sys, st.fov * fr, lamA) : st.fov * fr;
+                  }),
+                  vuy: vAuto.vuy, vly: vAuto.vly, vux: vAuto.vux, vlx: vAuto.vlx, auto: 1 };
+      if (vAuto.note) msgs.push(vAuto.note);
     }
     if (st.fmode === 'height') {                      // 视场按实像高定义（CODE V YRI）
       var lamF = opt.lambdas[opt.primary].nm / 1000, mk = function (n) {
@@ -652,8 +684,9 @@
           : '<span style="color:' + ink3 + '"> 全渐晕</span>';
         return '<span class="lg"><span class="sw" style="background:' + (fieldCols[b.fi] || fieldCols[0]) + '"></span>' +
           b.field.toFixed(1) + '°' + sp + '</span>';
-      }).join('') + '<span class="lg conv">方括号 = 该视场未渐晕的子午瞳区间 · 主波长 ' +
-        C.opt.lambdas[C.opt.primary].nm + ' nm · 1 : 1</span>';
+      }).join('') + '<span class="lg conv">方括号 = 该视场未渐晕的子午瞳区间'
+        + (C.sys.vig ? (C.sys.vig.auto ? '（按通光重算）' : '（来自文件的渐晕系数）') : '（按通光实时追迹）')
+        + ' · 主波长 ' + C.opt.lambdas[C.opt.primary].nm + ' nm · 1 : 1</span>';
     }
   }
 
@@ -1176,6 +1209,7 @@
       if (!L.tx) { showMsgs(['没有从文件里读到面数据，确认是 CODE V .seq 或 Zemax .zmx 导出？']); return; }
       var nSurf = L.tx.split('\n').length;
       $('ex').selectedIndex = -1;
+      CURORIGIN = null;                       // 现场导入的文件不带来源标记
       applyLens(L);
       LENSMSG = ['已导入 ' + f.name + '（' + (L.kind === 'zmx' ? 'Zemax .zmx' : 'CODE V .seq') + '）：' +
         nSurf + ' 面' + (L.title ? '，标题「' + L.title + '」' : '') + '。'].concat(LENSMSG);
@@ -1208,11 +1242,15 @@
     }
     if (e.nfield) $('nfield').value = e.nfield;
     state.vigH = e.vigH ? e.vigH.slice() : null;
+    state.sdDraw = e.sdDraw ? e.sdDraw.slice() : null;
+    state.sdAp = e.sdAp ? e.sdAp.slice() : null;
+    state.vigAuto = null;
     state.cfgs = e.cfgs ? JSON.parse(JSON.stringify(e.cfgs)) : null;
     state.cfg = 0;
     if (state.cfgs) applyCfg(0);
     renderCfg();
     syncApMode(); syncFMode(); renderLDE(); renderWL();
+    originBadge($('originBadge'), CURORIGIN);
     lensNotes(e);
   }
   function lensNotes(e) {
@@ -1230,9 +1268,12 @@
       ' —— 这些面按空气处理，可在「玻璃」列改写为 nd/vd 或 6 位 MIL 代码。');
     if (e.cfgs && e.cfgs.length > 1) w.push('这颗镜头有 ' + e.cfgs.length + ' 个结构（' +
       e.cfgs.map(function (c) { return c.title; }).join(' / ') + '），用工具栏「结构」下拉切换；随结构变化的格子在表里标了色。');
+    if (CURORIGIN && CURORIGIN.origin)
+      w.unshift('数据来源：' + CURORIGIN.origin + (CURORIGIN.originNote ? ' —— ' + CURORIGIN.originNote : '') +
+        '读数只代表这份数据本身，不等于厂商实际产品的性能。');
     LENSMSG = w;
   }
-  var LENSMSG = [];
+  var LENSMSG = [], PENDMSG = [];
 
   $('focusBtn').addEventListener('click', function () {
     if (!last) return;
@@ -1264,6 +1305,58 @@
       $('defoc').value = (+best.toFixed(4));
       btn.textContent = label; btn.disabled = false;
       schedule(0);
+    }, 30);
+  });
+
+  /* ---------- 一键渐晕 —— CODE V 的 SET VIGNETTING ----------
+     用真实通光（CIR / 固定 DIAM / FLAP）把四条边缘参考光线推到「刚好通过」，
+     反算出本结构的 VUY / VLY / VUX / VLX，覆盖文件自带的那一份。
+     取 21 个视场点（0…最大视场，每 5% 一个）：线性插值误差 < 1% 瞳宽，
+     而常用的 3 / 6 / 11 / 21 个视场采样点正好落在网格上，根本不用插值。 */
+  var VIGN = 21;
+  $('vigBtn').addEventListener('click', function () {
+    if (!last) return;
+    var btn = this, label = btn.textContent;
+    btn.textContent = '计算中…'; btn.disabled = true;
+    setTimeout(function () {
+      try {
+        var st = readState(), lam = last.opt.lambdas[last.opt.primary].nm / 1000;
+        var fr = [], ths = [], i;
+        for (i = 0; i < VIGN; i++) {
+          var f = i / (VIGN - 1); fr.push(f);
+          ths.push(st.fmode === 'height' ? OPT.angleForHeight(last.sys, st.fov * f, lam) : st.fov * f);
+        }
+        var v = OPT.setVig(last.sys, Object.assign({}, last.opt, { vigFields: ths, sdAp: state.sdAp }));
+        if (!v) {
+          PENDMSG.push('一键渐晕没算：这颗镜头没有任何写死的通光（CODE V 的 CIR、Zemax 的固定 DIAM / 浮动通光 FLAP），'
+            + '没有孔径就无从判断谁挡住了谁。可以在「半孔径」列直接填上镜片的通光半径，再按一次。');
+          schedule(0); return;
+        }
+        var sdOf = function (k) {
+          var s2 = last.sys.surfaces[k];
+          return (s2 && s2.sd) || (state.sdAp && state.sdAp[k]) || 0;
+        };
+        var cnt = {}, nl = 0;
+        for (i = 0; i < v.lim.length; i++) if (v.lim[i] >= 0) { cnt[v.lim[i]] = (cnt[v.lim[i]] || 0) + 1; nl++; }
+        var limTxt = Object.keys(cnt).sort(function (a, b) { return cnt[b] - cnt[a]; }).slice(0, 3)
+          .map(function (k) { return 'S' + (+k + 1) + '(半口径 ' + (+sdOf(+k).toFixed(3)) + " mm" + '，' + cnt[k] + ' 个视场)'; }).join('、');
+        var wid = function (u, l) { return (2 - u - l) / 2; };          // 子午瞳宽占满瞳的比例
+        var note = '渐晕已按真实通光重算（CODE V 的 SET VIGNETTING）：' + v.nAp + ' 个通光面参与判断，'
+          + '光阑面 S' + (last.opt.stopIdx + 1) + ' 不参与（归一化瞳坐标 ±1 就是它的边缘，它不会渐晕自己）；'
+          + '取 ' + VIGN + ' 个视场点。'
+          + (limTxt ? '主要限制面：' + limTxt + '。' : '全视场都没被挡，渐晕系数全为 0。');
+        var cv = (state.cfgs && state.cfgs[state.cfg] && state.cfgs[state.cfg].vig) || null;
+        if (cv && cv.vuy && cv.vuy.length) {
+          var n2 = cv.vuy.length - 1, vlyF = (cv.vly || cv.vuy)[n2];
+          note += '最大视场的子午瞳宽 ' + (wid(cv.vuy[n2], vlyF) * 100).toFixed(1) + '% → '
+            + (wid(v.vuy[VIGN - 1], v.vly[VIGN - 1]) * 100).toFixed(1) + '%。';
+        }
+        if (v.dark) note += '有 ' + v.dark + ' 个视场整条子午轴都被挡住（全渐晕）。';
+        note += 'Ctrl+Z 可退回文件自带的系数。';
+        state.vigAuto = state.vigAuto || {};
+        state.vigAuto[state.cfg] = { f: fr, vuy: v.vuy, vly: v.vly, vux: v.vux, vlx: v.vlx, note: note };
+        schedule(0);
+      } finally { btn.textContent = label; btn.disabled = false; }
     }, 30);
   });
 
@@ -1322,11 +1415,12 @@
       wl: $('cmpWl').value,
       freqs: parseList($('cmpFreqs').value, [10, 30]).filter(function (v) { return v > 0; }).slice(0, 4),
       mode: $('cmpMode').value, ts: $('cmpTS').value, xax: $('cmpX').value,
-      ngrid: +$('cmpGrid').value, nfield: +$('cmpN').value, focus: $('cmpFocus').checked
+      ngrid: +$('cmpGrid').value, nfield: +$('cmpN').value, focus: $('cmpFocus').checked,
+      vig: $('cmpVig').checked
     };
   }
   /* 建系统 + 挂渐晕 + 定视场点（与主页面 compute() 同一套规则） */
-  function cmpAttach(sur, opt, L, c) {
+  function cmpAttach(sur, opt, L, c, S) {
     var sys = OPT.buildSystem(sur, opt);
     var hgt = (L.fmode || 'height') === 'height';
     var vsrc = (c && c.vig) || null;
@@ -1335,6 +1429,15 @@
       sys.vig = { th: L.vigH.map(function (h) { return hgt ? OPT.angleForHeight(sys, h, lam) : h; }),
                   vuy: vsrc.vuy, vly: vsrc.vly || vsrc.vuy,
                   vux: vsrc.vux || vsrc.vuy, vlx: vsrc.vlx || vsrc.vux || vsrc.vuy };
+    }
+    if (S && S.vig) {                                  // 一键渐晕：按真实通光重算，覆盖文件表
+      var ths = [];
+      for (var vi = 0; vi < VIGN; vi++) {
+        var vf = L.fov * vi / (VIGN - 1);
+        ths.push(hgt ? OPT.angleForHeight(sys, vf, lam) : vf);
+      }
+      var av = OPT.setVig(sys, Object.assign({}, opt, { vigFields: ths, sdAp: L.sdAp || null }));
+      if (av) sys.vig = { th: ths, vuy: av.vuy, vly: av.vly, vux: av.vux, vlx: av.vlx, auto: 1 };
     }
     if (hgt) {
       var mk = function (n) {
@@ -1379,12 +1482,13 @@
       stopIdx: Math.min((L.stop || 1) - 1, sur.length - 1),
       apertureMode: L.apmode || 'fno', fno: fno, epd: fno, rayAiming: false,
       maxFov: L.fov, defocus: 0, nGrid: S.ngrid, nField: S.nfield,
-      freqs: S.freqs, nRayViz: 3, nFieldViz: 3, colorBy: 'field', mtfMode: S.mode, objDist: objd
+      freqs: S.freqs, nRayViz: 3, nFieldViz: 3, colorBy: 'field', mtfMode: S.mode, objDist: objd,
+      sdDraw: L.sdDraw || null, sdAp: L.sdAp || null
     };
-    var sys = cmpAttach(sur, opt, L, c);
+    var sys = cmpAttach(sur, opt, L, c, S);
     if (S.focus) {
       var dz = axialBestFocus(sys, opt);
-      if (dz !== null && isFinite(dz)) { opt.defocus = dz; sys = cmpAttach(sur, opt, L, c); }
+      if (dz !== null && isFinite(dz)) { opt.defocus = dz; sys = cmpAttach(sur, opt, L, c, S); }
     }
     return { L: L, opt: opt, sys: sys, wl: wl, hgt: (L.fmode || 'height') === 'height',
              mtf: OPT.mtfVsField(sys, opt), lay: OPT.layoutGeometry(sys, opt) };
@@ -1400,7 +1504,9 @@
   }
   function cmpFillLens(k, brand) {
     $('cmpEx' + k).innerHTML = LENSDB.index.filter(function (e) { return brandOf(e) === brand; })
-      .map(function (e) { return '<option value="' + esc(e.id) + '">' + esc(e.name) + '</option>'; }).join('');
+      .map(function (e) {
+        return '<option value="' + esc(e.id) + '">' + esc(e.name) + (e.origin ? '（' + esc(e.origin) + '）' : '') + '</option>';
+      }).join('');
   }
   function cmpFillCfg(k, L) {
     var w = $('cmpCfgWrap' + k), sel = $('cmpCfg' + k);
@@ -1415,10 +1521,11 @@
     CMP[k].id = id;
     getLens(id, function (err, L) {
       if (err) { CMP[k].res = null; if (cb) cb(); return; }
-      var e = null;
-      for (var i = 0; i < LENSDB.index.length; i++) if (LENSDB.index[i].id === id) e = LENSDB.index[i];
+      var e = idxEntry(id);
       CMP[k].name = (e && e.name) || L.name || id;
       CMP[k].brand = e ? brandOf(e) : '';
+      CMP[k].entry = e;
+      originBadge($('cmpOrigin' + k), e);
       if (!L.cfgs || CMP[k].cfg >= L.cfgs.length) CMP[k].cfg = 0;
       CMP[k].L = L;
       $('cmpBrand' + k).value = CMP[k].brand;
@@ -1452,6 +1559,7 @@
     if (Math.abs(R.opt.defocus) > 1e-9) it.push(['离焦', fmt(R.opt.defocus, 4)]);
     var nm = R.opt.lambdas.map(function (x) { return x.nm; });
     it.push(['波长', nm.length + ' 条 · 主 ' + R.opt.lambdas[R.opt.primary].nm + ' nm']);
+    if (CMP[k].entry && CMP[k].entry.origin) it.push(['来源', CMP[k].entry.origin]);
     $('cmpStat' + k).innerHTML = it.map(function (x) {
       return '<span><b>' + esc(x[0]) + '</b><i>' + esc(x[1]) + '</i></span>';
     }).join('');
@@ -1541,7 +1649,9 @@
               : S.ts === 'avg' ? '画 (T+S)/2' : '实线 = 子午 T　虚线 = 弧矢 S';
     $('cmpLegend').innerHTML = sets.map(function (t) {
       return '<span class="lg"><span class="sw" style="background:' + t.cols[0] + '"></span>' +
-        t.k + ' · ' + esc(CMP[t.k].name || '') + ' · F/' + fmt(t.R.sys.fno, 2) + '</span>';
+        t.k + ' · ' + esc(CMP[t.k].name || '') +
+        (CMP[t.k].entry && CMP[t.k].entry.origin ? '（' + esc(CMP[t.k].entry.origin) + '）' : '') +
+        ' · F/' + fmt(t.R.sys.fno, 2) + '</span>';
     }).join('') + '<span class="lg conv">' + tsTxt + '</span>' +
       '<span class="lg conv" style="color:' + ink3 + '">短虚线 = 各自的衍射极限</span>';
     $('cmpBadge').textContent = sets.map(function (t) { return t.k + ' ' + t.R.mtf.rows.length + ' 点'; }).join(' · ') +
@@ -1572,7 +1682,7 @@
     $('cmpEx' + k).addEventListener('change', function () { CMP[k].cfg = 0; cmpPick(k, this.value, cmpRun); });
     $('cmpCfg' + k).addEventListener('change', function () { CMP[k].cfg = +this.value; cmpRun(); });
   });
-  ['cmpWl', 'cmpFreqs', 'cmpMode', 'cmpTS', 'cmpX', 'cmpGrid', 'cmpN', 'cmpFocus'].forEach(function (id) {
+  ['cmpWl', 'cmpFreqs', 'cmpMode', 'cmpTS', 'cmpX', 'cmpGrid', 'cmpN', 'cmpFocus', 'cmpVig'].forEach(function (id) {
     $(id).addEventListener('change', cmpRun);
   });
   addEventListener('resize', function () { if (CMP.on) cmpRun(); });

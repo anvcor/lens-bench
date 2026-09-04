@@ -185,8 +185,11 @@ var LENSIO = (function () {
         if (k === 'PARM') { cur.parm[+tk[1]] = num(tk[2]); continue; }
         if (k === 'STOP') { cur.isStop = true; continue; }
         if (k === 'FLAP' || k === 'SQAP') { cur.ap = num(tk[2]); continue; }
-        // 厚度「补偿器」解：本面厚度 = 和 − 参考面厚度（内对焦镜头常用，保持总长不变）
-        if (k === 'TCOM') { cur.tcom = { ref: +tk[1], sum: num(tk[2]) }; continue; }
+        // 厚度解（内对焦镜头靠它保持总长不变，文件里只存了当前结构那一份的结果）
+        //   TCOM = 互补 / Compensator：本面厚度 = 值 − 参考面厚度
+        //   TOLE = 位置 / Position  ：参考面到本面（含）的厚度之和 = 值
+        if (k === 'TCOM') { cur.solve = { kind: 'sum2', ref: +tk[1], val: num(tk[2]) }; continue; }
+        if (k === 'TOLE') { cur.solve = { kind: 'pos', ref: +tk[1], val: num(tk[2]) }; continue; }
         continue;
       }
       if (k === 'MODE' && (tk[1] || '').toUpperCase() !== 'SEQ') out.warn.push('这是非序列 (' + tk[1] + ') 文件，只按序列面读取。');
@@ -227,7 +230,15 @@ var LENSIO = (function () {
       // 文件里只存了当前结构那一份，硬套到近摄结构会把光线全挡掉。
       // 所以有渐晕系数时不导入通光（瞳由渐晕系数完整定义，Zemax 算 MTF 也是这么做的），
       // 没有渐晕系数时才拿它当硬光阑用。
-      if (s.ap || s.diamFix) { hasAp = true; if (!(vcy.length || vcx.length)) r.sd = fmt(s.ap || s.diam); }
+      // 硬光阑只认「固定」的通光（FLAP 或 DIAM 打了 fixed 标记）
+      var apHard = s.ap || (s.diamFix ? s.diam : 0);
+      if (apHard) { hasAp = true; if (!(vcy.length || vcx.length)) r.sd = fmt(apHard); }
+      // 画图半口径另存一份：自动算出来的 DIAM 也要，它就是 Zemax 画图时用的镜片外形。
+      // 不留这个，光路图只能靠光线包络反推半径，近摄结构会把强曲率面推到插进邻面里。
+      (out.sdDraw = out.sdDraw || [])[out.rows.length] = (s.ap || s.diam) || null;
+      // 真实通光另存一份：只认写死的（FLAP 或 fixed DIAM）。自动 DIAM 是光线包络反算出来的，
+      // 不是物理孔径，拿它判渐晕会自己挡自己。「一键渐晕」只按这一份算。
+      (out.sdAp = out.sdAp || [])[out.rows.length] = apHard || null;
       if (s.coni) r.k = fmt(s.coni);
       if (s.type === 'EVENASPH') {
         if (s.parm[1]) out.warn.push('第 ' + i + ' 面偶次非球面有 r² 项 (PARM 1 = ' + s.parm[1] + ')，本页模型没有该项，已忽略。');
@@ -239,15 +250,21 @@ var LENSIO = (function () {
       } else if (s.type !== 'STANDARD') {
         out.warn.push('第 ' + i + ' 面类型 ' + s.type + ' 本页不支持，已按球面处理。');
       }
-      if (s.tcom) (out.solves = out.solves || []).push({ surf: s.n, ref: s.tcom.ref, sum: s.tcom.sum });
+      if (s.solve) (out.solves = out.solves || []).push({ surf: s.n, kind: s.solve.kind, ref: s.solve.ref, val: s.solve.val });
       if (s.isStop) out.stop = out.rows.length;
       out.rows.push(r);
     }
 
-    if (out.solves && out.solves.length)
-      out.warn.push('读到 ' + out.solves.length + ' 个厚度补偿器解 (TCOM)：'
-        + out.solves.map(function (s2) { return 'S' + s2.surf + ' = ' + s2.sum + ' − S' + s2.ref; }).join('、')
+    if (out.solves && out.solves.length) {
+      out.solves.sort(function (a, b) { return a.surf - b.surf; });
+      out.warn.push('读到 ' + out.solves.length + ' 个厚度解：'
+        + out.solves.map(function (s2) {
+            return s2.kind === 'pos'
+              ? 'S' + s2.ref + '..S' + s2.surf + ' 厚度和 = ' + s2.val + '（位置解 TOLE）'
+              : 'S' + s2.surf + ' = ' + s2.val + ' − S' + s2.ref + '（互补解 TCOM）';
+          }).join('、')
         + '。这是内对焦的写法，各结构按解重算厚度（总长保持不变），而不是照抄文件里那一份。');
+    }
     if (hasAp && (vcy.length || vcx.length))
       out.warn.push('文件里的固定半口径 / 浮动通光 (FLAP) 没有导入成硬光阑：Zemax 的浮动通光逐结构重算，'
         + '存下来的只是当前结构那一份，套到近摄结构会把边缘光线全挡掉。通光瞳完全由渐晕系数 (VDY/VCY) 决定，'
@@ -407,11 +424,17 @@ var LENSIO = (function () {
       // 否则内对焦镜头会被当成整组前伸，总长和后组位置全错。
       if (sq.solves && sq.solves.length) {
         var baseT = (sq.rows || []).map(function (r) { return parseFloat(r.T) || 0; });
-        sq.solves.forEach(function (sv) {
+        var tAt = function (i) { return (c.thi[i] != null) ? c.thi[i] : (baseT[i] || 0); };
+        sq.solves.forEach(function (sv) {                       // 已按面号升序，可以顺序求解
           var ri = sv.surf - 1, rr = sv.ref - 1;
           if (ri < 0 || ri >= baseT.length || rr < 0 || rr >= baseT.length) return;
-          var tRef = (c.thi[rr] != null) ? c.thi[rr] : baseT[rr];
-          c.thi[ri] = sv.sum - tRef;
+          if (sv.kind === 'pos') {                              // 位置解：参考面到本面的厚度和固定
+            var acc = 0;
+            for (var q = rr; q < ri; q++) acc += tAt(q);
+            c.thi[ri] = sv.val - acc;
+          } else {                                              // 互补解：两面厚度之和固定
+            c.thi[ri] = sv.val - tAt(rr);
+          }
         });
       }
       if (!c.vig && sq.vig) c.vig = sq.vig;
@@ -461,6 +484,8 @@ var LENSIO = (function () {
       freqs: '10, 30, 80', aim: false,
       objd: (s.objDist != null && isFinite(s.objDist) && s.objDist < 1e7) ? s.objDist : null,
       nfield: [6, 9, 11, 15, 21, 31].indexOf(nFld) >= 0 ? nFld : 15,
+      sdDraw: (s.sdDraw && s.sdDraw.some(function (v) { return v; })) ? s.sdDraw.slice() : null,
+      sdAp: (s.sdAp && s.sdAp.some(function (v) { return v; })) ? s.sdAp.slice() : null,
       warn: (s.warn || []).slice()
     };
     if (!s.fields || !s.fields.length) { L.fmode = 'angle'; L.fov = 20; }
