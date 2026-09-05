@@ -481,7 +481,11 @@ var LENSIO = (function () {
       apmode: s.fno ? (s.fnoInf ? 'fnoinf' : 'fno') : (s.epd ? 'epd' : 'fno'),
       fmode: s.fieldMode === 'angle' ? 'angle' : 'height',
       fov: (s.fields && s.fields.length) ? s.fields[s.fields.length - 1] : 20,
-      freqs: '10, 30, 80', aim: false,
+      // 默认开光线瞄准：归一化瞳坐标必须是「光阑面上的坐标」才有意义。
+      // 关掉的话它落在近轴入瞳上，大视场的瞳像差会把这个参数化整个扭掉 ——
+      // FE 14mm F1.8 GM 56.7° 视场上，u = −1…+1 只覆盖光阑的 +0.13…+0.84，
+      // 主光线（u=0）落在 0.47 处，整束光线全跑到光阑上半边去了。
+      freqs: '10, 30, 80', aim: true,
       objd: (s.objDist != null && isFinite(s.objDist) && s.objDist < 1e7) ? s.objDist : null,
       nfield: [6, 9, 11, 15, 21, 31].indexOf(nFld) >= 0 ? nFld : 15,
       sdDraw: (s.sdDraw && s.sdDraw.some(function (v) { return v; })) ? s.sdDraw.slice() : null,

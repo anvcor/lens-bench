@@ -104,7 +104,8 @@
     // 日本厂商常用的光谱权重，重心明显压在 e 线
     jp:    [['656.3', '3'], ['587.6', '22'], ['546.1', '30'], ['486.1', '12'], ['435.8', '3']]
   };
-  var WLPRI = { p5: 1, p3: 1, p1: 0, vis: 2, leica: 2, jp: 2 };
+  // 主波长一律取 546.1（e 线绿光）；F d C 等权和 d 单色里没有这条线，只能退回 d 线
+  var WLPRI = { p5: 2, p3: 1, p1: 0, vis: 2, leica: 2, jp: 2 };
   function wlSet(k) { return WLSETS[k].map(function (x) { return { nm: x[0], w: x[1], c: wlColor(x[0]) }; }); }
   var DASH = ['', '5 2.5', '1.6 2.4', '8 2.5 1.6 2.5', '11 3', '2 2 7 2'];
 
@@ -485,6 +486,11 @@
                   }),
                   vuy: vAuto.vuy, vly: vAuto.vly, vux: vAuto.vux, vlx: vAuto.vlx, auto: 1 };
       if (vAuto.note) msgs.push(vAuto.note);
+      // 渐晕表的归一化瞳坐标分「瞄准」和「不瞄准」两套，不能混用
+      if (vAuto.aim !== undefined && !!vAuto.aim !== !!st.aim)
+        msgs.push('当前的光线瞄准设置（' + (st.aim ? '开' : '关') + '）和这张渐晕表算出来时（'
+          + (vAuto.aim ? '开' : '关') + '）不一致。归一化瞳坐标在两种设置下指的不是同一处，'
+          + '混用会让边缘视场的 MTF 明显失真——按一下「一键渐晕」按当前设置重算一遍即可。');
     }
     if (st.fmode === 'height') {                      // 视场按实像高定义（CODE V YRI）
       var lamF = opt.lambdas[opt.primary].nm / 1000, mk = function (n) {
@@ -555,6 +561,7 @@
     renderDataTable();
     $('perfBadge').textContent = (mtf.mode === 'diff' ? '衍射 · ' : '几何 · ') + mtf.rays.toLocaleString('en-US') + ' 条' + (mtf.aiming ? '（瞄准）' : '') + ' · ' + dt.toFixed(0) + ' ms';
     $('stPerf').textContent = '追迹 ' + mtf.rays.toLocaleString('en-US') + ' 条 · ' + dt.toFixed(0) + ' ms · JS 单线程';
+    syncVigBtn();
     writeHash(st);
   }
 
@@ -640,7 +647,11 @@
 
     var si = C.opt.stopIdx, zs = s.zVertex[si];
     if (zs !== undefined) {
-      var hs = s.surfaces[si].sd || L.sdStop || Math.max(L.maxR[si] * 1.06, s.epd / 2);
+      // 光阑刻线的半径要和镜片外形用同一个数（layoutGeometry 的 drawSd）。
+      // 原来用 sys.sdStop —— 那是孔径定义解出来的「近轴光瞳半径」，
+      // 实际边缘光线因为光瞳球差会落得更高（85 GM II 的 1.6m 结构：光线到 17.09，sdStop 只有 16.59），
+      // 于是光线从刻线中间穿过去，看着像和光阑打架。
+      var hs = (L.drawSd && L.drawSd[si]) || s.surfaces[si].sd || L.sdStop || Math.max(L.maxR[si] * 1.06, s.epd / 2);
       g.push('<line x1="' + X(zs) + '" y1="' + Y(hs) + '" x2="' + X(zs) + '" y2="' + Y(hs * 1.4 + 0.5) + '" stroke="' + inkC + '" stroke-width="2"/>');
       g.push('<line x1="' + X(zs) + '" y1="' + Y(-hs) + '" x2="' + X(zs) + '" y2="' + Y(-hs * 1.4 - 0.5) + '" stroke="' + inkC + '" stroke-width="2"/>');
       g.push('<text x="' + X(zs) + '" y="' + (Y(hs * 1.4 + 0.5) - 5) + '" fill="' + ink2 +
@@ -1244,7 +1255,9 @@
     state.vigH = e.vigH ? e.vigH.slice() : null;
     state.sdDraw = e.sdDraw ? e.sdDraw.slice() : null;
     state.sdAp = e.sdAp ? e.sdAp.slice() : null;
-    state.vigAuto = null;
+    // 镜头库里预先跑过「一键渐晕」的那份（tools/setvig.js 写的），载入即生效；
+    // 文件自带的系数还在 cfgs[i].vig 里，按一下工具栏那个键就能换回去。
+    state.vigAuto = e.vigAuto ? JSON.parse(JSON.stringify(e.vigAuto)) : null;
     state.cfgs = e.cfgs ? JSON.parse(JSON.stringify(e.cfgs)) : null;
     state.cfg = 0;
     if (state.cfgs) applyCfg(0);
@@ -1314,8 +1327,24 @@
      取 21 个视场点（0…最大视场，每 5% 一个）：线性插值误差 < 1% 瞳宽，
      而常用的 3 / 6 / 11 / 21 个视场采样点正好落在网格上，根本不用插值。 */
   var VIGN = 21;
+  function syncVigBtn() {
+    var on = !!(state.vigAuto && state.vigAuto[state.cfg]), b = $('vigBtn');
+    if (!b || b.disabled) return;
+    b.textContent = on ? '渐晕：按通光' : '一键渐晕';
+    b.classList.toggle('on', on);
+    b.title = on
+      ? '本结构的渐晕系数是按镜片真实通光重算的（CODE V 的 SET VIGNETTING）。点一下换回文件自带的那份。'
+      : '按镜片的真实通光重算本结构的渐晕系数（CODE V 的 SET VIGNETTING）';
+  }
   $('vigBtn').addEventListener('click', function () {
     if (!last) return;
+    if (state.vigAuto && state.vigAuto[state.cfg]) {          // 已经是按通光的 → 换回文件值
+      delete state.vigAuto[state.cfg];
+      if (!Object.keys(state.vigAuto).length) state.vigAuto = null;
+      PENDMSG.push('本结构的渐晕已换回文件自带的系数。文件的系数常常比它自己的通光松，'
+        + '光路图上会看到光线穿出镜片——再按一次「一键渐晕」就按通光重算回来。');
+      syncVigBtn(); schedule(0); return;
+    }
     var btn = this, label = btn.textContent;
     btn.textContent = '计算中…'; btn.disabled = true;
     setTimeout(function () {
@@ -1354,9 +1383,9 @@
         if (v.dark) note += '有 ' + v.dark + ' 个视场整条子午轴都被挡住（全渐晕）。';
         note += 'Ctrl+Z 可退回文件自带的系数。';
         state.vigAuto = state.vigAuto || {};
-        state.vigAuto[state.cfg] = { f: fr, vuy: v.vuy, vly: v.vly, vux: v.vux, vlx: v.vlx, note: note };
+        state.vigAuto[state.cfg] = { f: fr, vuy: v.vuy, vly: v.vly, vux: v.vux, vlx: v.vlx, note: note, aim: !!st.aim };
         schedule(0);
-      } finally { btn.textContent = label; btn.disabled = false; }
+      } finally { btn.textContent = label; btn.disabled = false; syncVigBtn(); }
     }, 30);
   });
 
@@ -1416,11 +1445,11 @@
       freqs: parseList($('cmpFreqs').value, [10, 30]).filter(function (v) { return v > 0; }).slice(0, 4),
       mode: $('cmpMode').value, ts: $('cmpTS').value, xax: $('cmpX').value,
       ngrid: +$('cmpGrid').value, nfield: +$('cmpN').value, focus: $('cmpFocus').checked,
-      vig: $('cmpVig').checked
+      vigFile: $('cmpVig').checked
     };
   }
   /* 建系统 + 挂渐晕 + 定视场点（与主页面 compute() 同一套规则） */
-  function cmpAttach(sur, opt, L, c, S) {
+  function cmpAttach(sur, opt, L, c, S, ci) {
     var sys = OPT.buildSystem(sur, opt);
     var hgt = (L.fmode || 'height') === 'height';
     var vsrc = (c && c.vig) || null;
@@ -1430,14 +1459,14 @@
                   vuy: vsrc.vuy, vly: vsrc.vly || vsrc.vuy,
                   vux: vsrc.vux || vsrc.vuy, vlx: vsrc.vlx || vsrc.vux || vsrc.vuy };
     }
-    if (S && S.vig) {                                  // 一键渐晕：按真实通光重算，覆盖文件表
-      var ths = [];
-      for (var vi = 0; vi < VIGN; vi++) {
-        var vf = L.fov * vi / (VIGN - 1);
-        ths.push(hgt ? OPT.angleForHeight(sys, vf, lam) : vf);
-      }
-      var av = OPT.setVig(sys, Object.assign({}, opt, { vigFields: ths, sdAp: L.sdAp || null }));
-      if (av) sys.vig = { th: ths, vuy: av.vuy, vly: av.vly, vux: av.vux, vlx: av.vlx, auto: 1 };
+    // 镜头库里预算好的「一键渐晕」表（tools/setvig.js 写的）压过文件表，和主页面保持一致；
+    // 勾了「渐晕用文件原值」才退回文件自带的那份。
+    var vAuto = (!(S && S.vigFile)) && L.vigAuto && L.vigAuto[ci];
+    if (vAuto && vAuto.f && vAuto.f.length === vAuto.vuy.length) {
+      sys.vig = { th: vAuto.f.map(function (q) {
+                    return hgt ? OPT.angleForHeight(sys, L.fov * q, lam) : L.fov * q;
+                  }),
+                  vuy: vAuto.vuy, vly: vAuto.vly, vux: vAuto.vux, vlx: vAuto.vlx, auto: 1 };
     }
     if (hgt) {
       var mk = function (n) {
@@ -1480,15 +1509,17 @@
     var opt = {
       lambdas: wl.map(function (x) { return { nm: x.nm, w: x.w }; }), primary: pri,
       stopIdx: Math.min((L.stop || 1) - 1, sur.length - 1),
-      apertureMode: L.apmode || 'fno', fno: fno, epd: fno, rayAiming: false,
+      // 光线瞄准必须跟着镜头走：渐晕表的归一化瞳坐标是在光阑面上定义的，
+      // 这里写死不瞄准的话，表和坐标对不上，边缘视场的 MTF 会明显偏
+      apertureMode: L.apmode || 'fno', fno: fno, epd: fno, rayAiming: L.aim !== false,
       maxFov: L.fov, defocus: 0, nGrid: S.ngrid, nField: S.nfield,
       freqs: S.freqs, nRayViz: 3, nFieldViz: 3, colorBy: 'field', mtfMode: S.mode, objDist: objd,
       sdDraw: L.sdDraw || null, sdAp: L.sdAp || null
     };
-    var sys = cmpAttach(sur, opt, L, c, S);
+    var sys = cmpAttach(sur, opt, L, c, S, ci);
     if (S.focus) {
       var dz = axialBestFocus(sys, opt);
-      if (dz !== null && isFinite(dz)) { opt.defocus = dz; sys = cmpAttach(sur, opt, L, c, S); }
+      if (dz !== null && isFinite(dz)) { opt.defocus = dz; sys = cmpAttach(sur, opt, L, c, S, ci); }
     }
     return { L: L, opt: opt, sys: sys, wl: wl, hgt: (L.fmode || 'height') === 'height',
              mtf: OPT.mtfVsField(sys, opt), lay: OPT.layoutGeometry(sys, opt) };

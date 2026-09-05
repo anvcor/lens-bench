@@ -373,42 +373,81 @@ var OPT = (function () {
     return { ok: true, pts: pts, P: P, D: D, opl: opl };
   }
 
+  /* 沿光线扫 f(t) = z − sag(r) 找第一次变号再二分。
+     用在「基准圆锥面根本没有交点、但实际非球面能打到」的情况：
+     高次项把面压平之后，实际面伸到基准球的边缘之外，光线擦过基准球却仍打在真面上。
+     索尼 FE 12-24 GM 广角端 60.9° 视场的 S18 就是这样——大半个瞳的光线全被判成追不通，
+     剩下几条的横向像差又极大，全场 RMS 因此报到 1220 µm。
+     只在圆锥解失败 / 牛顿发散时才走这里，不在热路径上。 */
+  function asphHit(s, px, py, pz, D) {
+    var r0 = Math.sqrt(px * px + py * py);
+    var span = Math.max(Math.abs(s.R) || 0, r0) * 4 + 10;
+    var N = 240, lo = -span * 0.25, hi = span;
+    var prevF = null, prevT = 0;
+    var fAt = function (t) {
+      var x = px + t * D[0], y = py + t * D[1], z = pz + t * D[2];
+      var sg = sag(s, x * x + y * y);
+      return isFinite(sg) ? z - sg : null;
+    };
+    for (var i = 0; i <= N; i++) {
+      var t = lo + (hi - lo) * i / N, f = fAt(t);
+      if (f === null) { prevF = null; prevT = t; continue; }
+      if (prevF !== null && ((prevF <= 0 && f >= 0) || (prevF >= 0 && f <= 0))) {
+        var a = prevT, b = t, fa = prevF;
+        for (var j = 0; j < 60; j++) {
+          var m = (a + b) / 2, fm = fAt(m);
+          if (fm === null) { b = m; continue; }
+          if ((fa <= 0 && fm >= 0) || (fa >= 0 && fm <= 0)) b = m; else { a = m; fa = fm; }
+        }
+        return (a + b) / 2;
+      }
+      prevF = f; prevT = t;
+    }
+    return null;
+  }
+
   function intersect(s, px, py, pz, D) {
-    var c = s.R ? 1 / s.R : 0, k = s.k, t;
+    var c = s.R ? 1 / s.R : 0, k = s.k, t = null;
     if (c === 0) {
-      if (Math.abs(D[2]) < 1e-14) return null;
-      t = -pz / D[2];
+      if (Math.abs(D[2]) >= 1e-14) t = -pz / D[2];
     } else {
       var A = c * (D[0] * D[0] + D[1] * D[1] + (1 + k) * D[2] * D[2]);
       var B = 2 * (c * (px * D[0] + py * D[1] + (1 + k) * pz * D[2]) - D[2]);
       var C = c * (px * px + py * py + (1 + k) * pz * pz) - 2 * pz;
-      if (Math.abs(A) < 1e-14) { if (Math.abs(B) < 1e-16) return null; t = -C / B; }
+      if (Math.abs(A) < 1e-14) { if (Math.abs(B) >= 1e-16) t = -C / B; }
       else {
         var disc = B * B - 4 * A * C;
-        if (disc < 0) return null;
-        var sq = Math.sqrt(disc);
-        var q = -0.5 * (B + (B >= 0 ? sq : -sq));
-        var t1 = q / A, t2 = (Math.abs(q) < 1e-300) ? t1 : C / q;
-        t = Math.abs(t1) < Math.abs(t2) ? t1 : t2;
+        if (disc >= 0) {
+          var sq = Math.sqrt(disc);
+          var q = -0.5 * (B + (B >= 0 ? sq : -sq));
+          var t1 = q / A, t2 = (Math.abs(q) < 1e-300) ? t1 : C / q;
+          t = Math.abs(t1) < Math.abs(t2) ? t1 : t2;
+        }
       }
     }
-    if (s.asph.length) {                                   // 非球面：牛顿迭代精修
-      for (var it = 0; it < 40; it++) {
-        var x = px + t * D[0], y = py + t * D[1], z = pz + t * D[2];
-        var r2 = x * x + y * y, r = Math.sqrt(r2);
-        var sg = sag(s, r2);
-        if (!isFinite(sg)) return null;
-        var f = z - sg;
-        if (Math.abs(f) < 1e-11) break;
-        var ds = r > 1e-12 ? dsagdr(s, r) : 0;
-        if (!isFinite(ds)) return null;
-        var drdt = r > 1e-12 ? (x * D[0] + y * D[1]) / r : 0;
-        var fp = D[2] - ds * drdt;
-        if (Math.abs(fp) < 1e-14) return null;
-        t -= f / fp;
-      }
+    if (!s.asph.length) return (t === null || !isFinite(t)) ? null : t;
+
+    // 非球面：从圆锥解出发牛顿精修；圆锥解不存在就先扫描兜一个
+    if (t === null || !isFinite(t)) { t = asphHit(s, px, py, pz, D); if (t === null) return null; }
+    var ok = false;
+    for (var it = 0; it < 40; it++) {
+      var x = px + t * D[0], y = py + t * D[1], z = pz + t * D[2];
+      var r2 = x * x + y * y, r = Math.sqrt(r2);
+      var sg = sag(s, r2);
+      if (!isFinite(sg)) break;
+      var f = z - sg;
+      if (Math.abs(f) < 1e-11) { ok = true; break; }
+      var ds = r > 1e-12 ? dsagdr(s, r) : 0;
+      if (!isFinite(ds)) break;
+      var drdt = r > 1e-12 ? (x * D[0] + y * D[1]) / r : 0;
+      var fp = D[2] - ds * drdt;
+      if (Math.abs(fp) < 1e-14) break;
+      t -= f / fp;
+      if (!isFinite(t)) break;
     }
-    return t;
+    if (ok) return t;
+    t = asphHit(s, px, py, pz, D);                         // 牛顿没收敛：退回扫描 + 二分
+    return t === null ? null : t;
   }
 
   /* ---------- 近轴：EFL / BFL / 入瞳 ---------- */
@@ -533,32 +572,65 @@ var OPT = (function () {
   }
 
   /* ---------- 光线瞄准：求使光线精确落在光阑面 (tx,ty) 的入瞳面起点 ---------- */
+  /* 把光线瞄到光阑面上的指定点。二维牛顿：未知量是入瞳坐标，残差是光阑面上的落点。
+     每次重算雅可比要 3 条部分追迹，一格一格算下来很贵（超广角上 MTF 慢 3 倍），
+     所以缓存「上一条光线的解 + 上一次的雅可比」：同一视场同一波长的相邻瞳点，
+     先用旧雅可比外推一步再迭代，一条光线通常 1~2 次追迹就收敛；
+     外推失败再退回原来的完整算法（从近轴入瞳出发、每步重算雅可比），结果与优化前一致。 */
   function aim(sys, thetaDeg, tx, ty, lambda) {
     var s = sys.stopIdx, m = Math.abs(sys.pupilMag) > 1e-9 ? sys.pupilMag : 1;
-    var ex = tx / m, ey = ty / m;
     var hit = function (x, y) {
       var st = startRay(sys, thetaDeg, x, y);
       var r = traceRay(sys, st.P, st.D, lambda, false, s + 1, true);
       return r.ok ? r.P : null;
     };
-    var d = 1e-3 * Math.max(1, sys.epd / 2);
-    for (var it = 0; it < 12; it++) {
-      var r0 = hit(ex, ey); if (!r0) return null;
-      var fx = r0[0] - tx, fy = r0[1] - ty;
-      if (fx * fx + fy * fy < 1e-14) break;
+    // 收敛判据用光阑半径的相对量：1e-6 × 光阑半径（约 1e-5 mm）已经远超作图和 MTF 的需要，
+    // 原来写死的 1e-14（≈0.1 nm）会让固定雅可比的迭代磨很多轮。
+    var scl = Math.max(1, sys.sdStop || sys.epd / 2);
+    var d = 1e-3 * Math.max(1, sys.epd / 2), TOL = 1e-12 * scl * scl;
+    var key = thetaDeg + '|' + lambda;
+    var C = sys._aimC;
+    if (!C || C.key !== key) C = sys._aimC = { key: key, ok: false };
+
+    var ex, ey, r0, fx, fy, it;
+    if (C.ok) {                                          // ---- 热启动 ----
+      var dtx = tx - C.tx, dty = ty - C.ty;
+      ex = C.ex + (C.e * dtx - C.b * dty) / C.det;
+      ey = C.ey + (C.a * dty - C.c * dtx) / C.det;
+      for (it = 0; it < 3; it++) {
+        r0 = hit(ex, ey); if (!r0) { ex = null; break; }
+        fx = r0[0] - tx; fy = r0[1] - ty;
+        if (fx * fx + fy * fy < TOL) {
+          C.ex = ex; C.ey = ey; C.tx = tx; C.ty = ty;
+          return { ex: ex, ey: ey };
+        }
+        ex += (-fx * C.e + C.b * fy) / C.det;
+        ey += (-C.a * fy + C.c * fx) / C.det;
+      }
+      C.ok = false;                                      // 旧雅可比不够用了，但起点还是好的
+    }
+
+    // ---- 完整算法：每步重算雅可比。热启动留下的位置比近轴猜测好得多，接着用 ----
+    if (ex === null || ex === undefined || !isFinite(ex)) { ex = tx / m; ey = ty / m; }
+    for (it = 0; it < 12; it++) {
+      r0 = hit(ex, ey); if (!r0) return null;
+      fx = r0[0] - tx; fy = r0[1] - ty;
+      if (fx * fx + fy * fy < TOL) break;
       var rx = hit(ex + d, ey), ry = hit(ex, ey + d); if (!rx || !ry) return null;
       var a = (rx[0] - r0[0]) / d, b = (ry[0] - r0[0]) / d, c = (rx[1] - r0[1]) / d, e = (ry[1] - r0[1]) / d;
       var det = a * e - b * c; if (Math.abs(det) < 1e-14) return null;
       var dx = (-fx * e + b * fy) / det, dy = (-a * fy + c * fx) / det;
       ex += dx; ey += dy;
+      C.a = a; C.b = b; C.c = c; C.e = e; C.det = det;
       if (dx * dx + dy * dy < 1e-16) break;
     }
+    if (C.det) { C.ok = true; C.ex = ex; C.ey = ey; C.tx = tx; C.ty = ty; }
     return { ex: ex, ey: ey };
   }
 
-  function launch(sys, thetaDeg, px, py, lambda, collect) {
+  function launch(sys, thetaDeg, px, py, lambda, collect, ignoreAp) {
     var st = startRay(sys, thetaDeg, px, py), P = st.P, D = st.D;
-    var r = traceRay(sys, P, D, lambda, collect);
+    var r = traceRay(sys, P, D, lambda, collect, undefined, ignoreAp);
     if (!r.ok) return r;
     if (Math.abs(r.D[2]) < 1e-12) return { ok: false, pts: r.pts };
     var t = (sys.zImg - r.P[2]) / r.D[2];
@@ -630,30 +702,58 @@ var OPT = (function () {
       // 等效椭圆瞳（衍射模式用；几何模式仍在整圆上取样、被挡的光线直接丢弃）
       var ax = 1, ay = 1, cy = 0, vig = null;
       if (diff) {
-        var spY = pupilSpan(sys, th, lam0, 'y'), spX = pupilSpan(sys, th, lam0, 'x');
+        var spY = pupilSpan(sys, th, lam0, 'y');
+        // 弧矢跨度要在子午瞳的中心那一行量：渐晕后的瞳是偏心的，
+        // 在 y = 0 上量等于量瞳边缘的一条弦，弧矢瞳会小一大截、MTF 反而虚高
+        var spX = pupilSpan(sys, th, lam0, 'x', spY ? (spY.hi + spY.lo) / 2 : 0);
         if (!spY || !spX) { out.push({ field: th, thru: 0, T: freqs.map(function () { return 0; }), S: freqs.map(function () { return 0; }), imgH: 0, rms: 0 }); continue; }
         ay = (spY.hi - spY.lo) / 2; cy = (spY.hi + spY.lo) / 2; ax = (spX.hi - spX.lo) / 2;
         vig = { ax: ax, ay: ay, cy: cy };
       }
 
+      /* 衍射模式的波前要比瞳多采一圈。
+         OTF 是把瞳沿剪切量 ±s 平移后自相关；只采到瞳边为止的话，靠边那一圈的平移点
+         落在采样区外，只能拿残缺的 2×2 模板插值，而那正是波前斜率最大的地方——
+         结果系统性偏高，且怎么加密网格都不收敛到正确值
+         （85 GM II 轴上 30 cyc/mm：24² 给 0.871、96² 给 0.811，严格积分是 0.797）。
+         多采 (最大剪切量 + 2 格) 一圈，平移点就总落在采到的区域里，粗网格也不偏。
+         外圈的光线本来就在渐晕之外、会被通光挡掉，所以绕开通光追——
+         瞳形状已经由等效椭圆完整描述，这里只是要那儿的波前值。 */
+      var G = 1, NN = N, gridF = grid;
+      if (diff) {
+        var sMax = 0;
+        for (var qs = 0; qs < freqs.length; qs++)
+          for (var ls = 0; ls < wl.length; ls++) {
+            var lmm = wl[ls].nm / 1e6;
+            sMax = Math.max(sMax, freqs[qs] * lmm * sys.fno / ay, freqs[qs] * lmm * sys.fno / ax);
+          }
+        G = 1 + Math.min(sMax, 1.05) + 2 / N;
+        NN = Math.max(N, Math.round(N * G));        // 采样密度保持不变
+        gridF = pupilGrid(NN);
+      }
+      var rIn = 1 / (G * G);                        // 瞳在网格坐标里的半径平方
       var xs = [], ys = [], ws = [], sumW = 0, cx = 0, cyc = 0, nTraced = 0, nHit = 0;
       var store = diff ? wl.map(function () {
-        return { w: new Float64Array(N * N), ok: new Uint8Array(N * N), R: [], idx: [] };
+        return { w: new Float64Array(NN * NN), ok: new Uint8Array(NN * NN), R: [], idx: [], inP: [] };
       }) : null;
 
-      for (var g = 0; g < grid.length; g++) {
-        var pu = diff ? ax * grid[g][0] : grid[g][0];
-        var pv = diff ? cy + ay * grid[g][1] : grid[g][1];
+      for (var g = 0; g < gridF.length; g++) {
+        var gu = gridF[g][0], gv = gridF[g][1];
+        var inP = !diff || (gu * gu + gv * gv) <= rIn + 1e-12;
+        var pu = diff ? ax * G * gu : gu;
+        var pv = diff ? cy + ay * G * gv : gv;
         var q = pupilXY(sys, th, pu, pv, lam0);
-        nTraced += wl.length; rayCount += wl.length;
+        if (inP) { nTraced += wl.length; }
+        rayCount += wl.length;
         if (!q) continue;
         for (var li = 0; li < wl.length; li++) {
-          var r = launch(sys, th, q.ex, q.ey, wl[li].nm / 1000, false);
+          var r = launch(sys, th, q.ex, q.ey, wl[li].nm / 1000, false, diff);
           if (!r.ok) continue;
+          if (diff) { store[li].R.push(r); store[li].idx.push(gridF[g][2]); store[li].inP.push(inP ? 1 : 0); }
+          if (!inP) continue;                       // 外圈只供波前插值，不进光斑
           var w = wl[li].w;
           nHit++; xs.push(r.x); ys.push(r.y); ws.push(w);
           sumW += w; cx += w * r.x; cyc += w * r.y;
-          if (diff) { store[li].R.push(r); store[li].idx.push(grid[g][2]); }
         }
       }
       // 主光线像高（过光阑中心那条）——CODE V 的 YRI / Zemax 的 real image height 就是它。
@@ -693,8 +793,13 @@ var OPT = (function () {
         }
         var pvMax = 0;
         for (var lp = 0; lp < wl.length; lp++) {
+          // PV 只统计瞳内：多采的那一圈在渐晕之外，波前在那里可以大到几十波，
+          // 拿它报 PV 会把「瞳网格够不够」的判断带偏
           var Sp = store[lp], lo = 1e30, hi = -1e30;
-          for (var tp = 0; tp < Sp.idx.length; tp++) { var vv2 = Sp.w[Sp.idx[tp]]; if (vv2 < lo) lo = vv2; if (vv2 > hi) hi = vv2; }
+          for (var tp = 0; tp < Sp.idx.length; tp++) {
+            if (!Sp.inP[tp]) continue;
+            var vv2 = Sp.w[Sp.idx[tp]]; if (vv2 < lo) lo = vv2; if (vv2 > hi) hi = vv2;
+          }
           if (hi > lo) pvMax = Math.max(pvMax, (hi - lo) / (wl[lp].nm / 1e6));
         }
         row.wpv = pvMax;
@@ -709,13 +814,24 @@ var OPT = (function () {
             var shT = nu3 * lamMM * fnoT, shS = nu3 * lamMM * fnoS;   // 单位圆坐标下的半剪切量
             var Wd = store[li3], ww = wl[li3].w;
             var rt = 0, it = 0, ct = 0, rs = 0, is = 0, cs = 0;
-            for (var gg = 0; gg < grid.length; gg++) {
-              var uu = grid[gg][0], vv = grid[gg][1];
-              if (!Wd.ok[grid[gg][2]]) continue;
-              var w1 = wAt(Wd, N, uu, vv + shT), w2 = wAt(Wd, N, uu, vv - shT);
-              if (w1 !== null && w2 !== null) { var ph = 2 * Math.PI * (w1 - w2) / lamMM; rt += Math.cos(ph); it += Math.sin(ph); ct++; }
-              var v1 = wAt(Wd, N, uu + shS, vv), v2 = wAt(Wd, N, uu - shS, vv);
-              if (v1 !== null && v2 !== null) { var p2 = 2 * Math.PI * (v1 - v2) / lamMM; rs += Math.cos(p2); is += Math.sin(p2); cs++; }
+            // 剪切量换算到（放大了 G 倍的）网格坐标；瞳在网格坐标里是半径 1/G 的圆
+            var sT = shT / G, sS = shS / G;
+            for (var gg = 0; gg < gridF.length; gg++) {
+              var uu = gridF[gg][0], vv = gridF[gg][1];
+              if (uu * uu + vv * vv > rIn) continue;      // 只在瞳内积分，外圈只是给插值用的
+              if (!Wd.ok[gridF[gg][2]]) continue;
+              // 重叠区 = 两个平移点都还在瞳内。ct/cs 数的必须是重叠区的点数，
+              // 因为面积比已经由解析的 dT/dS 给了，这里只负责重叠区上的相位平均。
+              var yA = vv + sT, yB = vv - sT;
+              if (uu * uu + yA * yA <= rIn && uu * uu + yB * yB <= rIn) {
+                var w1 = wAt(Wd, NN, uu, yA), w2 = wAt(Wd, NN, uu, yB);
+                if (w1 !== null && w2 !== null) { var ph = 2 * Math.PI * (w1 - w2) / lamMM; rt += Math.cos(ph); it += Math.sin(ph); ct++; }
+              }
+              var xA = uu + sS, xB = uu - sS;
+              if (xA * xA + vv * vv <= rIn && xB * xB + vv * vv <= rIn) {
+                var v1 = wAt(Wd, NN, xA, vv), v2 = wAt(Wd, NN, xB, vv);
+                if (v1 !== null && v2 !== null) { var p2 = 2 * Math.PI * (v1 - v2) / lamMM; rs += Math.cos(p2); is += Math.sin(p2); cs++; }
+              }
             }
             if (ct > 0) { RT += ww * dT * rt / ct; IT += ww * dT * it / ct; }
             if (cs > 0) { RS += ww * dS * rs / cs; IS += ww * dS * is / cs; }
@@ -778,11 +894,15 @@ var OPT = (function () {
     return { lo: low, hi: hi, fromVig: true };
   }
 
-  function pupilSpan(sys, theta, lam, axis) {
+  /* off = 另一个方向上的偏置。渐晕后的瞳在子午方向是偏心的（中心在 cy 而不是 0），
+     弧矢跨度必须在 y = cy 这条线上量 —— 在 y = 0 上量等于量到了瞳的边缘那一条弦，
+     会把弧矢瞳量小一大截（85 GM II 最大视场：0.52 vs 真实的 0.86）。
+     Zemax 的 VDX/VCX 也是这个意思：X 边缘光线走的是 Py' = VDY 这一行。 */
+  function pupilSpan(sys, theta, lam, axis, off) {
     var vs = vigSpan(sys, theta, axis);
     if (vs) return vs;
-    var X = axis === 'x';
-    var f = function (u) { return X ? passesXY(sys, theta, u, 0, lam) : passesXY(sys, theta, 0, u, lam); };
+    var X = axis === 'x', o0 = off || 0;
+    var f = function (u) { return X ? passesXY(sys, theta, u, o0, lam) : passesXY(sys, theta, o0, u, lam); };
     var seed = null, probe = [0, 0.2, -0.2, 0.45, -0.45, 0.7, -0.7];
     for (var i = 0; i < probe.length; i++) if (f(probe[i])) { seed = probe[i]; break; }
     if (seed === null) return null;
@@ -833,9 +953,10 @@ var OPT = (function () {
       return -1;
     }
 
-    /* 沿一条轴求「能全程通过」的归一化瞳区间 */
-    function span(th, X) {
-      var f = function (u) { return blockAt(th, X ? u : 0, X ? 0 : u) === -1; };
+    /* 沿一条轴求「能全程通过」的归一化瞳区间；off = 另一方向上的偏置 */
+    function span(th, X, off) {
+      var o0 = off || 0;
+      var f = function (u) { return blockAt(th, X ? u : o0, X ? o0 : u) === -1; };
       var probe = [0, 0.2, -0.2, 0.45, -0.45, 0.7, -0.7, 0.9, -0.9], seed = null;
       for (var j = 0; j < probe.length; j++) if (f(probe[j])) { seed = probe[j]; break; }
       if (seed === null) return null;                        // 整条轴都过不去 —— 全渐晕
@@ -854,7 +975,11 @@ var OPT = (function () {
 
     var ths = opt.vigFields || [], out = { th: [], vuy: [], vly: [], vux: [], vlx: [], lim: [], nAp: nAp, dark: 0 };
     for (i = 0; i < ths.length; i++) {
-      var th = ths[i], sy = span(th, false), sx = span(th, true);
+      // 子午先量（沿 x = 0，系统对 x 对称所以瞳心一定在 x = 0）；
+      // 弧矢再在子午瞳的中心那一行量 —— 渐晕后的瞳是偏心的，量错行会把弧矢瞳量小一大截
+      var th = ths[i], sy = span(th, false, 0);
+      var cy0 = sy ? (sy.lo + sy.hi) / 2 : 0;
+      var sx = span(th, true, cy0);
       out.th.push(th);
       if (!sy) { out.vuy.push(1); out.vly.push(1); out.dark++; out.lim.push(-1); }
       else { out.vuy.push(clamp01(1 - sy.hi)); out.vly.push(clamp01(1 + sy.lo)); out.lim.push(sy.lim); }
@@ -1071,7 +1196,45 @@ var OPT = (function () {
     var wls = byWvl ? opt.lambdas.map(function (L, i) { return { nm: L.nm, i: i }; })
       : [{ nm: opt.lambdas[opt.primary].nm, i: opt.primary }];
     var bundles = [], maxR = new Array(S.length).fill(0);
-    var zEnter = Math.min(0, sys.zEP) - Math.max(sys.totalTrack * 0.10, 2);
+    // 光线画到镜头前面多远。默认取总长的 10%，但超广角要再收一次：
+    // 60° 视场上，入射那一段每往前画 1 mm 就抬 1.8 mm，
+    // 照默认长度画完，画面高度会被入射段撑到镜头本身的两三倍，镜头缩成一小团。
+    // 这里限定入射段的抬升不超过首面半口径的 30%。
+    /* 入射段画到哪里为止：起点落在一个「虚拟前置球面」上，不是一个平面。
+       落在平面上的话，斜光线在画面上会拖得极长 —— 60° 视场每往前画 1 mm 就抬 1.8 mm ——
+       整张图的高度被入射段撑开，镜头本身缩成一小团（索尼 12-24 广角端就是这样）。
+       球面朝镜头方向弯回来，视场越大起点越靠近镜头，入射段自然短下去，
+       正是 Zemax 里在镜头最前面加一个带曲率半径的虚面的效果。
+       取顶点在 z = −lead、在首面口径 h1 处矢高约为 lead/2 的球：R = (h1² + s²) / (2s)，s = lead/2。
+       实测这条规则给 12-24 GM 解出 R ≈ 104，和手工在 Zemax 里加的 R = 100 基本一致。 */
+    var lead = Math.max(sys.totalTrack * 0.10, 2);
+    var zEnter = Math.min(0, sys.zEP) - lead;
+    var h1 = S[0].sd || (opt.sdDraw && opt.sdDraw[0]) || Math.max(sys.epd / 2, lead);
+    var sEnt = lead * 0.5;
+    var rEnt = (h1 * h1 + sEnt * sEnt) / (2 * sEnt);      // 前置球面半径（凸面朝物方）
+    var zcEnt = zEnter + rEnt;                            // 球心
+
+    /* 把入射段的起点挪到前置球面上。求线段 P0→P1 与球的交点，取先遇到的那个；
+       解不出来（球太小、光线打不到）就退回原来的平面裁剪。 */
+    function entryPoint(P0, P1) {
+      var dx = P1[0] - P0[0], dy = P1[1] - P0[1], dz = P1[2] - P0[2];
+      var wx = P0[0], wy = P0[1], wz = P0[2] - zcEnt;
+      var A = dx * dx + dy * dy + dz * dz;
+      if (A < 1e-18) return P0;
+      var B = 2 * (wx * dx + wy * dy + wz * dz);
+      var C = wx * wx + wy * wy + wz * wz - rEnt * rEnt;
+      var disc = B * B - 4 * A * C, t = null;
+      if (disc >= 0) {
+        var sq = Math.sqrt(disc), ta = (-B - sq) / (2 * A), tb = (-B + sq) / (2 * A);
+        if (ta >= 0 && ta <= 1) t = ta; else if (tb >= 0 && tb <= 1) t = tb;
+      }
+      if (t === null) {                                   // 退回平面
+        if (P0[2] >= zEnter || Math.abs(dz) < 1e-9) return P0;
+        t = (zEnter - P0[2]) / dz;
+        if (!(t >= 0 && t <= 1)) return P0;
+      }
+      return [P0[0] + t * dx, P0[1] + t * dy, P0[2] + t * dz];
+    }
 
     for (var f = 0; f < fieldsToDraw.length; f++) {
       var th = fieldsToDraw[f];
@@ -1097,13 +1260,7 @@ var OPT = (function () {
             var r = launch(sys, th, q2.ex, q2.ey, lam, true);
             if (!r.pts || r.pts.length < 2) continue;
             var pts = r.pts.slice();
-            if (pts[0][2] < zEnter && pts.length > 1) {
-              var d0 = pts[1][2] - pts[0][2];
-              if (Math.abs(d0) > 1e-9) {
-                var t = (zEnter - pts[0][2]) / d0;
-                pts[0] = [pts[0][0] + t * (pts[1][0] - pts[0][0]), pts[0][1] + t * (pts[1][1] - pts[0][1]), zEnter];
-              }
-            }
+            if (pts.length > 1) pts[0] = entryPoint(pts[0], pts[1]);
             polys.push(pts.map(function (p) { return [p[2], p[1]]; }));
             for (var k2 = 1; k2 < pts.length && k2 - 1 < S.length; k2++)
               maxR[k2 - 1] = Math.max(maxR[k2 - 1], Math.abs(pts[k2][1]));
