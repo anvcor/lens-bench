@@ -37,11 +37,14 @@ var OPT = (function () {
   function p1(l) { return 1 / l; }
   function p2(l) { return 1 / Math.pow(l, 3.5); }
 
-  function makeGlass(nd, vd) {
+  /* 模型玻璃：只给 nd / vd（可再给 ΔPg,F）时用 Conrady 三项拟合。
+     ΔPg,F 是「相对正常线的偏离」，Zemax 的模型玻璃第三个参数就是它；
+     不给就落在正常线上（PgF = 0.6438 − 0.001682·vd），异常色散玻璃会失真。 */
+  function makeGlass(nd, vd, dPgF) {
     if (!isFinite(nd) || nd <= 1) return function () { return 1; };
     if (!isFinite(vd) || vd <= 0) return function () { return nd; };
     var dnFC = (nd - 1) / vd;
-    var PgF = 0.6438 - 0.001682 * vd;
+    var PgF = 0.6438 - 0.001682 * vd + (isFinite(dPgF) ? dPgF : 0);
     var a11 = p1(LF) - p1(LC), a12 = p2(LF) - p2(LC), b1 = dnFC;
     var a21 = p1(LG) - p1(LF), a22 = p2(LG) - p2(LF), b2 = PgF * dnFC;
     var det = a11 * a22 - a12 * a21;
@@ -250,7 +253,9 @@ var OPT = (function () {
     if (t.indexOf('/') >= 0) {
       var pr = t.split('/');
       var nd = parseFloat(pr[0]), vd = parseFloat(pr[1]);
-      if (isFinite(nd) && isFinite(vd)) return { fn: makeGlass(nd, vd), label: nd.toFixed(5) + '/' + vd.toFixed(2) };
+      var dp = pr.length > 2 ? parseFloat(pr[2]) : NaN;          // 第三段 = ΔPg,F（Zemax 模型玻璃的第三个参数）
+      if (isFinite(nd) && isFinite(vd)) return { fn: makeGlass(nd, vd, dp),
+        label: nd.toFixed(5) + '/' + vd.toFixed(2) + (isFinite(dp) && dp ? '/' + dp.toFixed(5) : '') + ' 模型玻璃' };
     }
     // 支持 MIL 代码 517640 / 517.640
     var mil = t.replace(/[.\s]/g, '');
@@ -572,11 +577,20 @@ var OPT = (function () {
   }
 
   /* ---------- 光线瞄准：求使光线精确落在光阑面 (tx,ty) 的入瞳面起点 ---------- */
-  /* 把光线瞄到光阑面上的指定点。二维牛顿：未知量是入瞳坐标，残差是光阑面上的落点。
-     每次重算雅可比要 3 条部分追迹，一格一格算下来很贵（超广角上 MTF 慢 3 倍），
-     所以缓存「上一条光线的解 + 上一次的雅可比」：同一视场同一波长的相邻瞳点，
-     先用旧雅可比外推一步再迭代，一条光线通常 1~2 次追迹就收敛；
-     外推失败再退回原来的完整算法（从近轴入瞳出发、每步重算雅可比），结果与优化前一致。 */
+  /* 二维牛顿：未知量是入瞳坐标，残差是光阑面上的落点。每步重算雅可比要 3 条部分追迹，
+     一格一格算下来很贵（超广角上 MTF 慢 3 倍），所以要加速；但加速不能改变答案。
+
+     这里加速的办法是「同视场同波长只解一次主光线，把它的雅可比当作该视场的参考」：
+       · 参考解 = 该 (θ, λ) 下瞄准光阑中心那条光线，冷启动解出来，顺便存下雅可比；
+       · 别的瞳点用「参考解 + J⁻¹·目标偏移」当起点，前几步沿用这个固定雅可比（每步只要 1 条追迹），
+         收不住再退回每步重算；仍然收不住，就从近轴起点冷启动重来一次。
+     全过程只依赖 (θ, λ, tx, ty)，跟这一帧里先算了哪条光线无关。
+
+     早先这里缓存的是「上一条光线的解」，于是答案跟调用顺序有关：
+       · 迭代跑满不收敛还把最后那个点交出去 —— 那是一条根本不落在目标点上的光线；
+       · 瞳像差大的地方牛顿有多个解，从上一条光线出发会跳到另一支上。
+     两件事合起来的后果实测过：FE 12-24mm GM 的 Z2 最大视场多放了 3.5mm 的光（穿模），
+     唯卓仕 55/1.8 的 0.70 / 0.75 视场则被误判成多渐晕 0.12，而且同一颗镜头两次跑出来还不一样。 */
   function aim(sys, thetaDeg, tx, ty, lambda) {
     var s = sys.stopIdx, m = Math.abs(sys.pupilMag) > 1e-9 ? sys.pupilMag : 1;
     var hit = function (x, y) {
@@ -584,48 +598,54 @@ var OPT = (function () {
       var r = traceRay(sys, st.P, st.D, lambda, false, s + 1, true);
       return r.ok ? r.P : null;
     };
-    // 收敛判据用光阑半径的相对量：1e-6 × 光阑半径（约 1e-5 mm）已经远超作图和 MTF 的需要，
-    // 原来写死的 1e-14（≈0.1 nm）会让固定雅可比的迭代磨很多轮。
+    // 收敛判据用光阑半径的相对量：TOL 是迭代目标（1e-6 × 光阑半径，约 1e-5 mm，
+    // 远超作图和 MTF 的需要），TOLA 是「可以交货」的上限（1e-4 × 光阑半径）。
+    // 迭代跑满还没到 TOLA 就返回 null —— 瞄不到的光线必须说瞄不到。
     var scl = Math.max(1, sys.sdStop || sys.epd / 2);
-    var d = 1e-3 * Math.max(1, sys.epd / 2), TOL = 1e-12 * scl * scl;
+    var d = 1e-3 * Math.max(1, sys.epd / 2), TOL = 1e-12 * scl * scl, TOLA = 1e-8 * scl * scl;
     var key = thetaDeg + '|' + lambda;
     var C = sys._aimC;
-    if (!C || C.key !== key) C = sys._aimC = { key: key, ok: false };
+    if (!C || C.key !== key) C = sys._aimC = { key: key, ok: false, tried: false };
 
-    var ex, ey, r0, fx, fy, it;
-    if (C.ok) {                                          // ---- 热启动 ----
-      var dtx = tx - C.tx, dty = ty - C.ty;
-      ex = C.ex + (C.e * dtx - C.b * dty) / C.det;
-      ey = C.ey + (C.a * dty - C.c * dtx) / C.det;
-      for (it = 0; it < 3; it++) {
-        r0 = hit(ex, ey); if (!r0) { ex = null; break; }
-        fx = r0[0] - tx; fy = r0[1] - ty;
-        if (fx * fx + fy * fy < TOL) {
-          C.ex = ex; C.ey = ey; C.tx = tx; C.ty = ty;
-          return { ex: ex, ey: ey };
+    if (!C.tried) {                       // 该视场的参考解（主光线），只解一次
+      C.tried = true;
+      var ref = newton(0, 0, null, 0, 0, true);
+      if (ref) { C.ex = ref[0]; C.ey = ref[1]; C.ok = true; }
+    }
+    var x0, y0, J = null;
+    if (C.ok && C.det) {
+      J = C;
+      x0 = C.ex + (C.e * tx - C.b * ty) / C.det;
+      y0 = C.ey + (C.a * ty - C.c * tx) / C.det;
+    } else { x0 = tx / m; y0 = ty / m; }
+
+    var sol = newton(x0, y0, J, tx, ty, false);
+    if (!sol && J) sol = newton(tx / m, ty / m, null, tx, ty, false);   // 参考起点不好使，冷启动重来
+    return sol ? { ex: sol[0], ey: sol[1] } : null;
+
+    /* J 非空时前 4 步沿用这个固定雅可比（每步 1 条追迹），之后每步重算（每步 3 条）。
+       storeJ 只有解参考光线时才为真 —— 缓存里必须始终是「主光线那一份」，
+       让它跟着最近一条光线走，就等于把调用顺序写进了结果里。 */
+    function newton(x0b, y0b, Jf, TX, TY, storeJ) {
+      var X = x0b, Y = y0b, r, gx, gy, k, a, b, c, e, det, nFix = Jf ? 4 : 0;
+      for (k = 0; k < 14; k++) {
+        r = hit(X, Y); if (!r) return null;
+        gx = r[0] - TX; gy = r[1] - TY;
+        if (gx * gx + gy * gy < TOL) return [X, Y];
+        if (k < nFix) { a = Jf.a; b = Jf.b; c = Jf.c; e = Jf.e; det = Jf.det; }
+        else {
+          var rx = hit(X + d, Y), ry = hit(X, Y + d); if (!rx || !ry) return null;
+          a = (rx[0] - r[0]) / d; b = (ry[0] - r[0]) / d; c = (rx[1] - r[1]) / d; e = (ry[1] - r[1]) / d;
+          det = a * e - b * c; if (Math.abs(det) < 1e-14) return null;
+          if (storeJ) { C.a = a; C.b = b; C.c = c; C.e = e; C.det = det; }
         }
-        ex += (-fx * C.e + C.b * fy) / C.det;
-        ey += (-C.a * fy + C.c * fx) / C.det;
+        var dx = (-gx * e + b * gy) / det, dy = (-a * gy + c * gx) / det;
+        X += dx; Y += dy;
+        // 步长已经压到机器精度，再迭代也不动了：按上一步的残差判收敛
+        if (dx * dx + dy * dy < 1e-16) return (gx * gx + gy * gy < TOLA) ? [X, Y] : null;
       }
-      C.ok = false;                                      // 旧雅可比不够用了，但起点还是好的
+      return null;
     }
-
-    // ---- 完整算法：每步重算雅可比。热启动留下的位置比近轴猜测好得多，接着用 ----
-    if (ex === null || ex === undefined || !isFinite(ex)) { ex = tx / m; ey = ty / m; }
-    for (it = 0; it < 12; it++) {
-      r0 = hit(ex, ey); if (!r0) return null;
-      fx = r0[0] - tx; fy = r0[1] - ty;
-      if (fx * fx + fy * fy < TOL) break;
-      var rx = hit(ex + d, ey), ry = hit(ex, ey + d); if (!rx || !ry) return null;
-      var a = (rx[0] - r0[0]) / d, b = (ry[0] - r0[0]) / d, c = (rx[1] - r0[1]) / d, e = (ry[1] - r0[1]) / d;
-      var det = a * e - b * c; if (Math.abs(det) < 1e-14) return null;
-      var dx = (-fx * e + b * fy) / det, dy = (-a * fy + c * fx) / det;
-      ex += dx; ey += dy;
-      C.a = a; C.b = b; C.c = c; C.e = e; C.det = det;
-      if (dx * dx + dy * dy < 1e-16) break;
-    }
-    if (C.det) { C.ok = true; C.ex = ex; C.ey = ey; C.tx = tx; C.ty = ty; }
-    return { ex: ex, ey: ey };
   }
 
   function launch(sys, thetaDeg, px, py, lambda, collect, ignoreAp) {
@@ -719,13 +739,53 @@ var OPT = (function () {
          多采 (最大剪切量 + 2 格) 一圈，平移点就总落在采到的区域里，粗网格也不偏。
          外圈的光线本来就在渐晕之外、会被通光挡掉，所以绕开通光追——
          瞳形状已经由等效椭圆完整描述，这里只是要那儿的波前值。 */
+      /* 有效 F/# 必须按「像空间方向余弦」上的瞳半宽定，不能拿 fno/ay 顶替。
+         归一化瞳坐标（光阑上）到像空间方向余弦的映射在离轴上被大幅压缩：
+         视场越大压得越狠（实测最大视场 q 半宽 / 轴上：135mm ×0.95、85mm ×0.86、
+         35mm ×0.53、16mm ×0.46）。拿 fno/ay 当截止频率，等于把瞳当成没被压缩过，
+         截止频率偏高、剪切量偏小，边缘视场的 MTF 系统性虚高——
+         16mm 角落 80cyc/mm 因此报 0.58，严格二维积分是 0.32。
+         正确做法：ν_c = 2 × 该方向的方向余弦瞳半宽（cyc/mm），即 F = 1/(2·λ·半宽)。
+         轴上退化成原来的 fno（差别只是近轴 F/# 与真实边缘光线 NA 之差）。 */
+      function coneHalf(thd, lamUm, sp) {
+        var lmm2 = lamUm / 1000, p0 = 1e30, p1 = -1e30, q0 = 1e30, q1 = -1e30, ok = 0;
+        // 瞳缘上取 16 个点 + 中心。必须直接追瞳缘，不能拿瞳内的取样网格量：
+        // 网格点是格子中心，够不到瞳边，半宽会偏小一格，有效 F/# 偏大、MTF 偏低
+        // （85 GM II 轴上 30 cyc/mm 因此从 0.798 掉到 0.784）。
+        var pr = [[0, 0]];
+        for (var pa = 0; pa < 16; pa++)
+          pr.push([Math.cos(2 * Math.PI * pa / 16), Math.sin(2 * Math.PI * pa / 16)]);
+        for (var pi = 0; pi < pr.length; pi++) {
+          var qq = pupilXY(sys, thd, sp.cx + sp.ax * pr[pi][0], sp.cy + sp.ay * pr[pi][1], lamUm);
+          if (!qq) continue;
+          var rr2 = launch(sys, thd, qq.ex, qq.ey, lamUm, false, true);
+          if (!rr2.ok) continue;
+          ok++;
+          var pp = rr2.D[0] / lmm2, qv = rr2.D[1] / lmm2;
+          if (pp < p0) p0 = pp; if (pp > p1) p1 = pp;
+          if (qv < q0) q0 = qv; if (qv > q1) q1 = qv;
+        }
+        return ok >= 3 ? { q: (q1 - q0) / 2, p: (p1 - p0) / 2 } : null;
+      }
+      var lam0mm = lam0 / 1000, fnoT0 = sys.fno / ay, fnoS0 = sys.fno / ax;
+      var fnoTw = null, fnoSw = null;
+      if (diff) {
+        fnoTw = []; fnoSw = [];
+        for (var lc = 0; lc < wl.length; lc++) {
+          var lu = wl[lc].nm / 1000, lm4 = lu / 1000;
+          var cr = coneHalf(th, lu, { ax: ax, ay: ay, cy: cy, cx: 0 });
+          fnoTw.push(cr && cr.q > 1e-9 ? 1 / (2 * lm4 * cr.q) : sys.fno / ay);
+          fnoSw.push(cr && cr.p > 1e-9 ? 1 / (2 * lm4 * cr.p) : sys.fno / ax);
+        }
+        fnoT0 = fnoTw[opt.primary || 0]; fnoS0 = fnoSw[opt.primary || 0];
+      }
       var G = 1, NN = N, gridF = grid;
       if (diff) {
         var sMax = 0;
         for (var qs = 0; qs < freqs.length; qs++)
           for (var ls = 0; ls < wl.length; ls++) {
             var lmm = wl[ls].nm / 1e6;
-            sMax = Math.max(sMax, freqs[qs] * lmm * sys.fno / ay, freqs[qs] * lmm * sys.fno / ax);
+            sMax = Math.max(sMax, freqs[qs] * lmm * fnoT0, freqs[qs] * lmm * fnoS0);
           }
         G = 1 + Math.min(sMax, 1.05) + 2 / N;
         NN = Math.max(N, Math.round(N * G));        // 采样密度保持不变
@@ -808,8 +868,8 @@ var OPT = (function () {
           var RT = 0, IT = 0, RS = 0, IS = 0, nrm = 0;
           for (var li3 = 0; li3 < wl.length; li3++) {
             var lamUm = wl[li3].nm / 1000, lamMM = lamUm / 1000;
-            // 截止频率按该方向的瞳半宽缩放 —— 渐晕使瞳变窄，截止频率同比下降
-            var fnoT = sys.fno / ay, fnoS = sys.fno / ax;
+            // 截止频率 = 2 × 该方向的方向余弦瞳半宽（逐波长实测，含离轴压缩与渐晕）
+            var fnoT = (fnoTw && fnoTw[li3]) || fnoT0, fnoS = (fnoSw && fnoSw[li3]) || fnoS0;
             var dT = diffractionMTF(nu3, lamUm, fnoT), dS = diffractionMTF(nu3, lamUm, fnoS);
             var shT = nu3 * lamMM * fnoT, shS = nu3 * lamMM * fnoS;   // 单位圆坐标下的半剪切量
             var Wd = store[li3], ww = wl[li3].w;
@@ -1339,6 +1399,7 @@ var OPT = (function () {
     glassCount: glassCount, glassNames: glassNames, glassCatalogs: glassCatalogs, parseMaterial: parseMaterial,
     paraxFromObject: paraxFromObject, pupilSpan: pupilSpan,
     buildSystem: buildSystem, firstOrder: firstOrder, traceRay: traceRay, launch: launch, aim: aim,
+    startRay: startRay,
     mtfVsField: mtfVsField, diffractionMTF: diffractionMTF, angleForHeight: angleForHeight, layoutGeometry: layoutGeometry, pupilSpan: pupilSpan,
     setVig: setVig, pupilGrid: pupilGrid, sag: sag, pupilXY: pupilXY, aberrations: aberrations, chiefHeight: chiefHeight, rayFan: rayFan
   };

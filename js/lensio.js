@@ -165,7 +165,7 @@ var LENSIO = (function () {
     var surfs = [], cur = null, i, j;
     var ftyp = null, xfln = [], yfln = [], vdx = [], vdy = [], vcx = [], vcy = [];
     var waves = [], pwav = 1, fnum = null, fnumType = 0, enpd = null, unit = 'MM';
-    var mnum = 0, ltt = {}, mce = [];
+    var mnum = 0, ltt = {}, mce = [], raim = null;
 
     for (i = 0; i < lines.length; i++) {
       var raw = lines[i];
@@ -179,7 +179,18 @@ var LENSIO = (function () {
         if (k === 'TYPE') { cur.type = (tk[1] || '').toUpperCase(); continue; }
         if (k === 'CURV') { cur.curv = num(tk[1]); continue; }
         if (k === 'DISZ') { cur.disz = /INFINITY/i.test(tk[1]) ? Infinity : num(tk[1]); continue; }
-        if (k === 'GLAS') { cur.glas = tk[1]; continue; }
+        if (k === 'GLAS') {
+          // GLAS <牌号> <模型标志> <?> <nd> <vd> <ΔPg,F> …
+          // Zemax 的模型玻璃写成 GLAS ___BLANK 1 0 nd vd dPgF，牌号是占位符，
+          // 照抄过去查不到就当空气了 —— 改写成 nd/vd/ΔPg,F 交给内核的模型玻璃。
+          cur.glas = tk[1];
+          var mFlag = +tk[2], mNd = num(tk[4]), mVd = num(tk[5]), mDp = num(tk[6]);
+          if ((mFlag === 1 || /^_*blank_*$/i.test(tk[1] || '')) &&
+              isFinite(mNd) && mNd > 1 && isFinite(mVd) && mVd > 0)
+            cur.glas = mNd.toFixed(6) + '/' + mVd.toFixed(4) +
+                       (isFinite(mDp) && mDp ? '/' + mDp.toFixed(6) : '');
+          continue;
+        }
         if (k === 'CONI') { cur.coni = num(tk[1]); continue; }
         if (k === 'DIAM') { cur.diam = num(tk[1]); cur.diamFix = +tk[2] === 1; continue; }
         if (k === 'PARM') { cur.parm[+tk[1]] = num(tk[2]); continue; }
@@ -198,6 +209,10 @@ var LENSIO = (function () {
       else if (k === 'FTYP') ftyp = tk.slice(1).map(num);
       else if (k === 'FNUM') { fnum = num(tk[1]); fnumType = tk.length > 2 ? (parseInt(tk[2], 10) || 0) : 0; }
       else if (k === 'ENPD') enpd = num(tk[1]);
+      // RAIM <?> <瞄准模式> …  模式 0=关 1=近轴 2=实光线。
+      // 这一位决定「归一化瞳坐标」指的是哪儿：关瞄准时在近轴入瞳上，开了在光阑上。
+      // 渐晕系数 VDY/VCY 和自动半口径 DIAM 都是在那套坐标下算出来的，两套不能混用。
+      else if (k === 'RAIM') raim = tk.length > 2 ? (parseInt(tk[2], 10) || 0) : 0;
       else if (k === 'XFLN') xfln = tk.slice(1).map(num);
       else if (k === 'YFLN') yfln = tk.slice(1).map(num);
       else if (k === 'VDXN') vdx = tk.slice(1).map(num);
@@ -214,6 +229,7 @@ var LENSIO = (function () {
       }
     }
     if (unit !== 'MM') out.warn.push('文件单位是 ' + unit + '，本页只按毫米计算，数值未换算。');
+    out.raim = raim;
 
     // ---- 面：SURF 0 是物面，最后一个是像面 ----
     var nF = ftyp ? (ftyp[2] || 1) : 1, nW = ftyp ? (ftyp[3] || 1) : 1;
@@ -505,6 +521,17 @@ var LENSIO = (function () {
     }
     L.vigH = (s.vig && s.vig.vuy && s.fields && s.fields.length === s.vig.vuy.length) ? s.fields.slice() : null;
     L.cfgs = cfgsFrom(s);
+    /* 渐晕系数是在哪套归一化瞳坐标下写的 —— 由文件里的光线瞄准开关 (RAIM) 决定。
+       关瞄准 (RAIM 模式 0)：坐标在近轴入瞳上；开了 (1 近轴 / 2 实光线)：在光阑上。
+       本页一律按光阑坐标算（见 optics.js 的说明），所以 'ep' 的表必须先换算，
+       换算由 tools/setvig.js 追迹完成（解析器里没有光学内核）。 */
+    if (s._zmx && s.raim != null) {
+      L.vigCoord = s.raim === 0 ? 'ep' : 'stop';
+      if (s.raim === 0 && L.cfgs && L.cfgs.some(function (c) { return c && c.vig && c.vig.vuy; }))
+        L.warn.push('这个 zmx 关掉了光线瞄准 (RAIM 0)：文件里的渐晕系数、自动半口径都是在'
+          + '「近轴入瞳」坐标下算的，而本页的归一化瞳坐标定义在光阑面上。两套坐标在大视场差很多，'
+          + '直接混用会把瞳的位置和大小整个算错。已由 tools/setvig.js 逐视场追迹换算到光阑坐标。');
+    }
     L.sub = lensSub(L);
     return L;
   }
