@@ -301,7 +301,12 @@ var OPT = (function () {
     return { fn: null, label: 'air', err: true };
   }
 
-  /* ---------- 面型：矢高与斜率 ---------- */
+  /* ---------- 面型：矢高与斜率 ----------
+     高次项按 r² 的幂递推，不用 Math.pow：非球面项是 r⁴ r⁶ r⁸…，全是 r² 的整数幂，
+     `p *= r2` 一次乘法就能推到下一项。Math.pow 在热路径上占了整体 1/3 的时间
+     （sag + dsagdr 合计 37%），而且 sag 拿到的本来就是 r²，用 pow 还要先开方再幂回去。
+     数值上这条路更短也更准，但和 Math.pow 不是逐位相同——二分/牛顿的落点因此会有
+     1e-9 量级的移动，见项目记录 7.1 的容差。 */
   function sag(s, r2) {
     var c = s.R ? 1 / s.R : 0, z = 0;
     if (c !== 0) {
@@ -309,33 +314,72 @@ var OPT = (function () {
       if (d < 0) return NaN;
       z = c * r2 / (1 + Math.sqrt(d));
     }
-    if (s.asph.length) {
-      var r = Math.sqrt(r2);
-      for (var i = 0; i < s.asph.length; i++) if (s.asph[i]) z += s.asph[i] * Math.pow(r, 4 + 2 * i);
+    var A = s.asph, n = A.length;
+    if (n) {
+      var p = r2 * r2;                                   // r⁴
+      for (var i = 0; i < n; i++) { if (A[i]) z += A[i] * p; p *= r2; }
     }
     return z;
   }
   function dsagdr(s, r) {
-    var c = s.R ? 1 / s.R : 0, d = 0;
+    var c = s.R ? 1 / s.R : 0, d = 0, r2 = r * r;
     if (c !== 0) {
-      var q = 1 - (1 + s.k) * c * c * r * r;
+      var q = 1 - (1 + s.k) * c * c * r2;
       if (q <= 0) return NaN;
       d = c * r / Math.sqrt(q);
     }
-    for (var i = 0; i < s.asph.length; i++) if (s.asph[i]) d += (4 + 2 * i) * s.asph[i] * Math.pow(r, 3 + 2 * i);
+    var A = s.asph, n = A.length;
+    if (n) {
+      var p = r2 * r;                                    // r³
+      for (var i = 0; i < n; i++) { if (A[i]) d += (4 + 2 * i) * A[i] * p; p *= r2; }
+    }
     return d;
+  }
+  /* 矢高与斜率一起算 —— 非球面牛顿每一步都要这两个，分开算等于把圆锥项和
+     高次项各走两遍。结果写进调用方给的两元数组，避免每步分配对象。 */
+  function sagSlope(s, r2, r, out) {
+    var c = s.R ? 1 / s.R : 0, z = 0, d = 0;
+    if (c !== 0) {
+      var q = 1 - (1 + s.k) * c * c * r2;
+      if (q < 0) { out[0] = NaN; out[1] = NaN; return out; }
+      var sq = Math.sqrt(q);
+      z = c * r2 / (1 + sq);
+      d = sq > 0 ? c * r / sq : NaN;
+    }
+    var A = s.asph, n = A.length;
+    if (n) {
+      var p3 = r2 * r, p4 = r2 * r2;                     // r³ / r⁴
+      for (var i = 0; i < n; i++) {
+        if (A[i]) { z += A[i] * p4; d += (4 + 2 * i) * A[i] * p3; }
+        p3 *= r2; p4 *= r2;
+      }
+    }
+    out[0] = z; out[1] = d; return out;
+  }
+  /* 折射率按 (面, λ) 记忆化。色散公式里全是 Math.pow(λ, 负指数)，一条光线要算 27 次，
+     单这一项就占 12%。一条光线内 λ 不变，多波长 MTF 会来回切，所以存一小张表而不是一格。 */
+  function nOf(s, lam) {
+    var K = s._nk, V = s._nv, i;
+    if (K === undefined) { K = s._nk = []; V = s._nv = []; }
+    for (i = 0; i < K.length; i++) if (K[i] === lam) return V[i];
+    var v = s.n(lam);
+    if (K.length < 12) { K.push(lam); V.push(v); }
+    return v;
   }
 
   /* ---------- 单条光线的实追迹 ----------
      P/D 为全局坐标（z 沿光轴，面 0 顶点在 z=0）
      返回 {ok, pts:[[x,y,z]...], D, blockedAt}
      ------------------------------------------------------------------ */
-  function traceRay(sys, P0, D0, lambda, collect, upTo, ignoreAp) {
+  function traceRay(sys, P0, D0, lambda, collect, upTo, ignoreAp, apChk) {
     var S = sys.surfaces, zv = sys.zVertex;
     var nEnd = (upTo === undefined || upTo === null) ? S.length : Math.min(upTo, S.length);
     var P = [P0[0], P0[1], P0[2]], D = [D0[0], D0[1], D0[2]];
     var pts = collect ? [[P[0], P[1], P[2]]] : null;
     var nPrev = 1, opl = 0;
+    // apChk：逐面的「真实通光」半径。给了就顺路记下 max(落点半径 / 通光)，
+    // 调用方拿它当连续的余量函数求根，不必再 collect 一整串落点（省掉每面一次数组分配）
+    var apMax = 0, apIdx = -1;
 
     for (var i = 0; i < nEnd; i++) {
       var s = S[i];
@@ -354,6 +398,10 @@ var OPT = (function () {
 
       var x = lx + t * D[0], y = ly + t * D[1], z = lz + t * D[2];
       var r2 = x * x + y * y, r = Math.sqrt(r2);
+      if (apChk !== undefined && apChk !== null) {
+        var ac = apChk[i];
+        if (ac) { var q2 = r / ac; if (q2 > apMax) { apMax = q2; apIdx = i; } }
+      }
       if (!ignoreAp && s.sd !== null && r > s.sd * 1.0000001) return { ok: false, pts: pts, blockedAt: i, vignetted: true };
 
       opl += nPrev * (tPre + t);                          // 几何路程 × 折射率
@@ -366,7 +414,7 @@ var OPT = (function () {
       var nx = r > 1e-12 ? -ds * x / r : 0, ny = r > 1e-12 ? -ds * y / r : 0, nz = 1;
       var nl = Math.sqrt(nx * nx + ny * ny + 1); nx /= nl; ny /= nl; nz /= nl;
 
-      var nNext = s.n(lambda);
+      var nNext = nOf(s, lambda);
       var mu = nPrev / nNext;
       var ci = D[0] * nx + D[1] * ny + D[2] * nz;
       var s2 = 1 - mu * mu * (1 - ci * ci);
@@ -375,7 +423,7 @@ var OPT = (function () {
       D[0] = mu * D[0] + f * nx; D[1] = mu * D[1] + f * ny; D[2] = mu * D[2] + f * nz;
       nPrev = nNext;
     }
-    return { ok: true, pts: pts, P: P, D: D, opl: opl };
+    return { ok: true, pts: pts, P: P, D: D, opl: opl, apMax: apMax, apIdx: apIdx };
   }
 
   /* 沿光线扫 f(t) = z − sag(r) 找第一次变号再二分。
@@ -411,6 +459,7 @@ var OPT = (function () {
     return null;
   }
 
+  var _ss = [0, 0];                                     // sagSlope 的复用缓冲，别在热路径上分配
   function intersect(s, px, py, pz, D) {
     var c = s.R ? 1 / s.R : 0, k = s.k, t = null;
     if (c === 0) {
@@ -434,15 +483,16 @@ var OPT = (function () {
 
     // 非球面：从圆锥解出发牛顿精修；圆锥解不存在就先扫描兜一个
     if (t === null || !isFinite(t)) { t = asphHit(s, px, py, pz, D); if (t === null) return null; }
-    var ok = false;
+    var ok = false, SS = _ss;
     for (var it = 0; it < 40; it++) {
       var x = px + t * D[0], y = py + t * D[1], z = pz + t * D[2];
       var r2 = x * x + y * y, r = Math.sqrt(r2);
-      var sg = sag(s, r2);
+      sagSlope(s, r2, r, SS);
+      var sg = SS[0];
       if (!isFinite(sg)) break;
       var f = z - sg;
       if (Math.abs(f) < 1e-11) { ok = true; break; }
-      var ds = r > 1e-12 ? dsagdr(s, r) : 0;
+      var ds = r > 1e-12 ? SS[1] : 0;
       if (!isFinite(ds)) break;
       var drdt = r > 1e-12 ? (x * D[0] + y * D[1]) / r : 0;
       var fp = D[2] - ds * drdt;
@@ -998,36 +1048,66 @@ var OPT = (function () {
     }
     if (!nAp) return null;                                   // 一个真实通光都没有，无从判起
 
+    /* 一条光线的「口径余量」：max(落点半径 / 真实通光) − 1，>0 就是被挡。
+       这是个连续函数，零点就是瞳缘 —— 拿它求根比在布尔值上二分省一个数量级的光线。
+       追不通（瞄不到 / 全反射 / 面上无交点）返回 null：那里没有余量可言，只能退回二分。
+       m.lim 是限制面（0 基）。 */
+    var TOLAP = 1.0000001;                                   // 和原来判「挡住」的容差一致
+    function marginAt(th, ux, uy) {
+      var q = pupilXY(sys, th, ux, uy, lam);
+      if (!q) return null;
+      var st = startRay(sys, th, q.ex, q.ey);
+      var r = traceRay(sys, st.P, st.D, lam, false, undefined, true, ap);
+      if (!r.ok) return null;
+      return { m: r.apMax - TOLAP, lim: r.apIdx };
+    }
     /* 挡住这条光线的面（0 基）；通得过返回 −1；根本追不出来返回 −2 */
     function blockAt(th, ux, uy) {
-      var q = pupilXY(sys, th, ux, uy, lam);
-      if (!q) return -2;
-      var st = startRay(sys, th, q.ex, q.ey);
-      var r = traceRay(sys, st.P, st.D, lam, true, undefined, true);   // 收点，绕开内建通光自己判
-      if (!r.ok) return (r.blockedAt === undefined || r.blockedAt === null) ? -2 : r.blockedAt;
-      for (var k = 1; k < r.pts.length && k - 1 < ap.length; k++) {
-        var a2 = ap[k - 1]; if (!a2) continue;
-        var x = r.pts[k][0], y = r.pts[k][1];
-        if (Math.sqrt(x * x + y * y) > a2 * 1.0000001) return k - 1;
-      }
-      return -1;
+      var mm = marginAt(th, ux, uy);
+      if (mm === null) return -2;
+      return mm.m > 0 ? mm.lim : -1;
     }
 
     /* 沿一条轴求「能全程通过」的归一化瞳区间；off = 另一方向上的偏置 */
     function span(th, X, off) {
       var o0 = off || 0;
-      var f = function (u) { return blockAt(th, X ? u : o0, X ? o0 : u) === -1; };
-      var probe = [0, 0.2, -0.2, 0.45, -0.45, 0.7, -0.7, 0.9, -0.9], seed = null;
-      for (var j = 0; j < probe.length; j++) if (f(probe[j])) { seed = probe[j]; break; }
+      var at = function (u) { return marginAt(th, X ? u : o0, X ? o0 : u); };
+      var probe = [0, 0.2, -0.2, 0.45, -0.45, 0.7, -0.7, 0.9, -0.9], seed = null, seedM = null;
+      for (var j = 0; j < probe.length; j++) {
+        var mm = at(probe[j]);
+        if (mm !== null && mm.m <= 0) { seed = probe[j]; seedM = mm.m; break; }
+      }
       if (seed === null) return null;                        // 整条轴都过不去 —— 全渐晕
       var lim = -1;
+      /* 带保护的假位法（Illinois）。始终保持 a 通、b 挡的括号，所以和二分一样稳，
+         但一般 8~10 次就收到 1e-9，而定步长二分跑满 24 次也只到 1.2e-7。
+         余量取不到（追不通）的点当成「挡」，并退回该侧的二分步 —— 不会因此丢掉括号。 */
       var edge = function (dir) {
-        if (f(dir)) return dir;                              // 一直到满瞳都没挡
-        var good = seed, bad = dir;
-        for (var k = 0; k < 24; k++) { var m = (good + bad) / 2; if (f(m)) good = m; else bad = m; }
-        var b = blockAt(th, X ? bad : 0, X ? 0 : bad);
-        if (b >= 0) lim = b;
-        return good;
+        var md = at(dir);
+        if (md !== null && md.m <= 0) return dir;            // 一直到满瞳都没挡
+        var a = seed, fa = seedM, b = dir, fb = (md === null) ? null : md.m;
+        if (md !== null && md.lim >= 0) lim = md.lim;
+        var side = 0;
+        for (var k = 0; k < 30 && Math.abs(b - a) > 1e-9; k++) {
+          var c;
+          if (fb !== null && fb > 0 && fa < 0) {             // 有两端余量 → 假位
+            c = (a * fb - b * fa) / (fb - fa);
+            var lo2 = Math.min(a, b), hi2 = Math.max(a, b), w = hi2 - lo2;
+            if (!(c > lo2 + 0.01 * w && c < hi2 - 0.01 * w)) c = 0.5 * (a + b);
+          } else c = 0.5 * (a + b);                          // 否则退回二分
+          var mc = at(c);
+          if (mc === null || mc.m > 0) {                     // 挡住（或追不通）
+            b = c; fb = (mc === null) ? null : mc.m;
+            if (mc !== null && mc.lim >= 0) lim = mc.lim;
+            if (side === -1 && fa !== null) fa *= 0.5;       // Illinois 缩另一端，避免单侧停滞
+            side = -1;
+          } else {                                           // 通过
+            a = c; fa = mc.m;
+            if (side === 1 && fb !== null) fb *= 0.5;
+            side = 1;
+          }
+        }
+        return a;                                            // 交货的一定是通得过的那一侧
       };
       var hi = edge(1), lo = edge(-1);
       return { lo: lo, hi: hi, lim: lim };
