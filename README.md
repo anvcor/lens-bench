@@ -135,7 +135,8 @@ dist/
 **≤ 0.03**（归一化瞳坐标，满瞳半宽 = 1，唯卓仕 55 EVO 全视场）；开光线瞄准后收到 0.023——
 残差来自 CODE V 的参考光线是瞄到光阑的。
 
-**重复性也要验**：同一份数据连跑两遍 `tools/setvig.js`，`vigAuto` 必须**逐位相同**。
+**重复性也要验**：同一份数据连跑两遍 `tools/setvig.js --force`（不加 `--force` 会因为签名没变
+直接跳过），`vigAuto` 必须**逐位相同**；并行跑出来的也必须和 `--serial` 的逐位相同。
 `aim()` 曾经缓存「上一条光线的解」来提速，结果让渐晕表跟调用顺序有关——
 12-24 GM 的一个结构因此多放了 3.5 mm 的光。现在缓存的是「该视场主光线」这个
 只跟 (视场, 波长) 有关的参考量，整个瞄准是输入的纯函数。
@@ -145,24 +146,30 @@ dist/
 
 ---
 
-## 加一颗镜头：四步
+## 加一颗镜头：一条命令
 
 ```bash
-# 1. 转换（文件或整个目录都行，递归找 .zmx/.seq/.len）
-node tools/zmx2lens.js "E:/Download" -o lenses
-
-# 2. 逐结构预跑一遍「一键渐晕」（不做这步，文件自带的渐晕系数会让光线穿出镜片）
-node tools/setvig.js
-
-# 3. 重新打包
-node tools/build.js
-
-# 4. 本地看一眼
-node tools/serve.js          # → http://localhost:8080
+node tools/import.js "E:/Download/Len_zmx_collect"   # 转换 → 渐晕 → 打包 → 几何自检
+node tools/serve.js                                   # 本地看一眼 → http://localhost:8080
 ```
 
-第 1 步会给每个文件写一个 `lenses/<id>.json`，并重写 `lenses/index.json`（网页下拉读它）。
-第 2 步把重算好的渐晕表写进各 JSON 的 `vigAuto`，文件自带的那份留在 `cfgs[i].vig` 里不动；
+`import.js` 把原来的四步串起来，并且**只处理变过的镜头**：
+加一颗镜头约 **4 s**（原来每次都全库重跑渐晕，约 180 s）。
+
+```bash
+node tools/import.js                 # 不加新文件，只把该重算的补上（改了内核就是它）
+node tools/import.js --force --all   # 强制全库重算 + 全库几何自检（约 60 s）
+node tools/import.js --no-check      # 跳过几何自检
+```
+
+判断「要不要重算」靠每颗镜头 JSON 里的 `vigSig` = 影响结果的全部输入 + `src/optics.js` 的哈希。
+**动了内核，全库签名同时失效**，所以不会出现「改了算法却忘了重跑渐晕表」这种事。
+要算的镜头多于一颗时会分派到多个进程并行，结果与串行逐位相同。
+
+四步也可以单独跑：`zmx2lens.js` → `setvig.js` → `build.js` → `geocheck.js`。
+
+转换会给每个文件写一个 `lenses/<id>.json`，并重写 `lenses/index.json`（网页下拉读它）。
+渐晕这一步把重算好的表写进各 JSON 的 `vigAuto`，文件自带的那份留在 `cfgs[i].vig` 里不动；
 `node tools/setvig.js --clear` 可以全部撤掉，`node tools/setvig.js <id>` 只跑指定的几颗。
 几百个文件就是一条命令的事，重名会自动加后缀，转换失败的文件会单独列出来不影响其余。
 
