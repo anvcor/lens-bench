@@ -1078,15 +1078,19 @@ var OPT = (function () {
         if (mm !== null && mm.m <= 0) { seed = probe[j]; seedM = mm.m; break; }
       }
       if (seed === null) return null;                        // 整条轴都过不去 —— 全渐晕
-      var lim = -1;
+      /* 上下（左右）两条边缘各自记自己的限制面。
+         原来两条边共用一个 lim，edge(+1) 记下的会被随后的 edge(-1) 覆盖掉，
+         「有几个不同的面在限制光瞳」这条判据就只看到四分之一的证据 ——
+         尼康 Z 50mm f/1.8 S 因此被误判成「只有 S5 在限制」而跳过重算。 */
+      var limPair = [-1, -1];
       /* 带保护的假位法（Illinois）。始终保持 a 通、b 挡的括号，所以和二分一样稳，
          但一般 8~10 次就收到 1e-9，而定步长二分跑满 24 次也只到 1.2e-7。
          余量取不到（追不通）的点当成「挡」，并退回该侧的二分步 —— 不会因此丢掉括号。 */
-      var edge = function (dir) {
+      var edge = function (dir, slot) {
         var md = at(dir);
         if (md !== null && md.m <= 0) return dir;            // 一直到满瞳都没挡
         var a = seed, fa = seedM, b = dir, fb = (md === null) ? null : md.m;
-        if (md !== null && md.lim >= 0) lim = md.lim;
+        if (md !== null && md.lim >= 0) limPair[slot] = md.lim;
         var side = 0;
         for (var k = 0; k < 30 && Math.abs(b - a) > 1e-9; k++) {
           var c;
@@ -1098,7 +1102,7 @@ var OPT = (function () {
           var mc = at(c);
           if (mc === null || mc.m > 0) {                     // 挡住（或追不通）
             b = c; fb = (mc === null) ? null : mc.m;
-            if (mc !== null && mc.lim >= 0) lim = mc.lim;
+            if (mc !== null && mc.lim >= 0) limPair[slot] = mc.lim;
             if (side === -1 && fa !== null) fa *= 0.5;       // Illinois 缩另一端，避免单侧停滞
             side = -1;
           } else {                                           // 通过
@@ -1109,11 +1113,13 @@ var OPT = (function () {
         }
         return a;                                            // 交货的一定是通得过的那一侧
       };
-      var hi = edge(1), lo = edge(-1);
-      return { lo: lo, hi: hi, lim: lim };
+      var hi = edge(1, 0), lo = edge(-1, 1);
+      return { lo: lo, hi: hi, limHi: limPair[0], limLo: limPair[1],
+               lim: limPair[0] >= 0 ? limPair[0] : limPair[1] };
     }
 
-    var ths = opt.vigFields || [], out = { th: [], vuy: [], vly: [], vux: [], vlx: [], lim: [], nAp: nAp, dark: 0 };
+    var ths = opt.vigFields || [], out = { th: [], vuy: [], vly: [], vux: [], vlx: [],
+                                          lim: [], lims: [], nAp: nAp, dark: 0 };
     for (i = 0; i < ths.length; i++) {
       // 子午先量（沿 x = 0，系统对 x 对称所以瞳心一定在 x = 0）；
       // 弧矢再在子午瞳的中心那一行量 —— 渐晕后的瞳是偏心的，量错行会把弧矢瞳量小一大截
@@ -1125,6 +1131,13 @@ var OPT = (function () {
       else { out.vuy.push(clamp01(1 - sy.hi)); out.vly.push(clamp01(1 + sy.lo)); out.lim.push(sy.lim); }
       if (!sx) { out.vux.push(1); out.vlx.push(1); }
       else { out.vux.push(clamp01(1 - sx.hi)); out.vlx.push(clamp01(1 + sx.lo)); }
+      /* lim[] 每个视场只留一个代表（老接口，clearvig 按视场索引用它）；
+         lims[] 把子午上下 + 弧矢左右四条边缘各自的限制面全记下来，判据用这一份。 */
+      [sy, sx].forEach(function (sp) {
+        if (!sp) return;
+        if (sp.limHi >= 0) out.lims.push(sp.limHi);
+        if (sp.limLo >= 0) out.lims.push(sp.limLo);
+      });
     }
     return out;
     function clamp01(v) { return Math.max(0, Math.min(1.999, v)); }
@@ -1426,9 +1439,20 @@ var OPT = (function () {
       // 写死通光的面不动 —— 那是真挡光的，光线本来就被切在孔径上了。
       if (!hard && fromFile) draw[d0] = Math.max(draw[d0], maxR[d0] * 1.002);
     }
-    for (var d1 = 0; d1 + 1 < S.length; d1++) {
-      var A = S[d1], B = S[d1 + 1], zA = zv[d1], zB = zv[d1 + 1];
-      var want = Math.max(draw[d1], draw[d1 + 1]);
+    /* 钳位只在「画出来的镜片面」之间做。两侧都是空气的面（光阑、平面虚面、像面）
+       根本不画成镜片，拿它去限制邻面是没有意义的 —— 尼康 Z 50mm F1.8 S 的 S13 就是
+       这样一个平面虚面，把 S14 的轮廓从它写死的 CIR 11.300 拉到 10.916，
+       近摄结构的光线（11.016，本来在 CIR 之内）于是被画到了镜片外面。
+       虚面的位置本来就是自由的（见 6.10），不能当成几何约束。
+       跳过虚面之后要按「相邻的两个可画面」比，不能只比下标相邻的那一对，
+       否则中间夹了虚面的两片镜片就没人管了。 */
+    var drawnIdx = [];
+    for (var dq = 0; dq < S.length; dq++)
+      if (S[dq].isGlass || (dq > 0 && S[dq - 1].isGlass)) drawnIdx.push(dq);
+    for (var dk = 0; dk + 1 < drawnIdx.length; dk++) {
+      var d1 = drawnIdx[dk], dn = drawnIdx[dk + 1];
+      var A = S[d1], B = S[dn], zA = zv[d1], zB = zv[dn];
+      var want = Math.max(draw[d1], draw[dn]);
       var gapAt = function (r) { return (zB + safeSag(B, r)) - (zA + safeSag(A, r)); };
       if (gapAt(want) >= 0) continue;                       // 到最外圈都没穿模
       var N2 = 64, lo = 0, hi = want;
@@ -1438,7 +1462,7 @@ var OPT = (function () {
       }
       for (var d3 = 0; d3 < 30; d3++) { var mm = (lo + hi) / 2; if (gapAt(mm) >= 0) lo = mm; else hi = mm; }
       draw[d1] = Math.min(draw[d1], lo);
-      draw[d1 + 1] = Math.min(draw[d1 + 1], lo);
+      draw[dn] = Math.min(draw[dn], lo);
     }
 
     var elems = [];

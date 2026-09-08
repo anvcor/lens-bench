@@ -33,6 +33,7 @@ var LENSIO = (function () {
   }
 
   function parseSeq(text) {
+    var numGlass = [];                                  // CODE V 数字式玻璃，读完要提示
     var raw = String(text).replace(/\r/g, '').split('\n');
     var lines = [], buf = '';                       // 处理行尾 & 续行
     raw.forEach(function (l) {
@@ -117,7 +118,19 @@ var LENSIO = (function () {
         var r = num(tk[1]), t = num(tk[2]);
         cur = { R: (r === null || r === 0) ? 'inf' : fmt(r), T: t === null ? '0' : fmt(t), mat: '', sd: '', k: '', asph: '' };
         if (tk[3] && !/^[-+]?[\d.]/.test(tk[3])) cur.mat = tk[3];
-        else if (tk[3] && tk[4]) cur.mat = tk[3] + '/' + tk[4];     // nd vd 写法
+        else if (tk[3] && tk[4]) cur.mat = tk[3] + '/' + tk[4];     // nd vd 两个数
+        else if (tk[3] && /^\d{6}\.\d+$/.test(tk[3])) {
+          /* CODE V 的数字式（虚拟 / 模型）玻璃：整数部分 = (nd−1)×10⁶，小数部分 = νd/100。
+             例：560412.639175 → nd 1.560412 / νd 63.9175。
+             以前这一支不认，玻璃被整个丢掉，那一面就当空气了 —— 和 Zemax 的 ___BLANK
+             同一种失效方式（见项目记录 6.12）：尼康 Z 50mm f/1.8 S 的面6 树脂层
+             因此把 EFL 从 51.60 算成 51.82、轴上 RMS 从 4 µm 变成 48 µm。 */
+          var gv = tk[3].split('.');
+          var gnd = 1 + parseInt(gv[0], 10) / 1e6;
+          var gvd = parseFloat('0.' + gv[1]) * 100;
+          cur.mat = gnd.toFixed(6) + '/' + gvd.toFixed(4);
+          numGlass.push({ i: out.rows.length + 1, tok: tk[3], nd: gnd, vd: gvd });
+        }
         continue;
       }
       if (!cur) continue;
@@ -145,6 +158,9 @@ var LENSIO = (function () {
     }
     flush();
     if (out.rows.length && out.rows[out.rows.length - 1].T === '0') out.rows[out.rows.length - 1].T = '0';
+    if (numGlass.length) out.warn.push('文件里有 ' + numGlass.length + ' 个面用 CODE V 的数字式玻璃写法（'
+      + numGlass.map(function (g) { return 'S' + g.i + ' ' + g.tok + ' → nd ' + g.nd.toFixed(6) + ' / vd ' + g.vd.toFixed(4); }).join('；')
+      + '），按「整数部分 = (nd−1)×10⁶、小数部分 = νd/100」当模型玻璃算 —— 这是兜底，不是可信数据。认不出来的话整个面会被当成空气（尼康 Z 50mm f/1.8 S 的面6 树脂层曾因此把 EFL 从 51.62 算成 51.82、轴上 RMS 从 4.6 µm 变成 48 µm），所以宁可解错也要解。⚠ 已知这样解出来的 νd 是错的：同一片树脂，原始交付件写的是 nd 1.56093 / νd 36.6，而 CODE V 重导出后编码成 560412.639175，按上式解得 νd 63.9175 —— 差了一倍。出现数字式玻璃基本就说明这份文件是 CODE V 往返导出的产物，请回去用原始的 .zmx / 交付版 .seq，那里玻璃是写全的。');
     return out;
   }
 

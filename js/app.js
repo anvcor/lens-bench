@@ -1366,7 +1366,8 @@
           return (s2 && s2.sd) || (state.sdAp && state.sdAp[k]) || 0;
         };
         var cnt = {}, nl = 0;
-        for (i = 0; i < v.lim.length; i++) if (v.lim[i] >= 0) { cnt[v.lim[i]] = (cnt[v.lim[i]] || 0) + 1; nl++; }
+        var lsrc = (v.lims && v.lims.length) ? v.lims : v.lim;
+        for (i = 0; i < lsrc.length; i++) if (lsrc[i] >= 0) { cnt[lsrc[i]] = (cnt[lsrc[i]] || 0) + 1; nl++; }
         var limTxt = Object.keys(cnt).sort(function (a, b) { return cnt[b] - cnt[a]; }).slice(0, 3)
           .map(function (k) { return 'S' + (+k + 1) + '(半口径 ' + (+sdOf(+k).toFixed(3)) + " mm" + '，' + cnt[k] + ' 个视场)'; }).join('、');
         var wid = function (u, l) { return (2 - u - l) / 2; };          // 子午瞳宽占满瞳的比例
@@ -1421,6 +1422,30 @@
     if (e.key !== 'Escape') return;
     if (!$('aboutSheet').hidden) { e.preventDefault(); aboutOpen(false); }
     else if (!$('cmpSheet').hidden) { e.preventDefault(); cmpOpen(false); }
+  });
+
+  /* ================= 卡片说明（表头的 ?，默认收起） =================
+     长说明不该常年占着版面，但也不该藏到「关于」里去——放在本卡片表头一个
+     16px 的 ? 后面，展开与否按卡片记在 localStorage，下次打开还是上次的样子。 */
+  var HELPKEY = 'lensbench.help';
+  var helpState = {};
+  try { helpState = JSON.parse(localStorage.getItem(HELPKEY)) || {}; } catch (e) { helpState = {}; }
+  function helpSet(btn, on) {
+    var box = $(btn.getAttribute('data-help'));
+    if (!box) return;
+    box.hidden = !on;
+    btn.setAttribute('aria-expanded', on ? 'true' : 'false');
+    btn.title = on ? '收起说明' : '使用说明';
+  }
+  [].forEach.call(document.querySelectorAll('.helpbtn'), function (btn) {
+    var key = btn.getAttribute('data-help');
+    helpSet(btn, !!helpState[key]);
+    btn.addEventListener('click', function () {
+      var on = btn.getAttribute('aria-expanded') !== 'true';
+      helpSet(btn, on);
+      helpState[key] = on;
+      try { localStorage.setItem(HELPKEY, JSON.stringify(helpState)); } catch (e) {}
+    });
   });
 
   $('themeBtn').addEventListener('click', function () {
