@@ -161,6 +161,21 @@ var LENSIO = (function () {
     if (numGlass.length) out.warn.push('文件里有 ' + numGlass.length + ' 个面用 CODE V 的数字式玻璃写法（'
       + numGlass.map(function (g) { return 'S' + g.i + ' ' + g.tok + ' → nd ' + g.nd.toFixed(6) + ' / vd ' + g.vd.toFixed(4); }).join('；')
       + '），按「整数部分 = (nd−1)×10⁶、小数部分 = νd/100」当模型玻璃算 —— 这是兜底，不是可信数据。认不出来的话整个面会被当成空气（尼康 Z 50mm f/1.8 S 的面6 树脂层曾因此把 EFL 从 51.62 算成 51.82、轴上 RMS 从 4.6 µm 变成 48 µm），所以宁可解错也要解。⚠ 已知这样解出来的 νd 是错的：同一片树脂，原始交付件写的是 nd 1.56093 / νd 36.6，而 CODE V 重导出后编码成 560412.639175，按上式解得 νd 63.9175 —— 差了一倍。出现数字式玻璃基本就说明这份文件是 CODE V 往返导出的产物，请回去用原始的 .zmx / 交付版 .seq，那里玻璃是写全的。');
+
+    /* 通光覆盖率。门槛照抄 tools/setvig.js 的 MINAP=4 / MINPCT=0.20：达不到就定不出
+       渐晕剖面，瞳只能按文件自带的 SETVIG 系数走，「一键渐晕」也会跳过。
+       这件事必须在解析时就说 —— 命令行还能在 setvig 那一步看见跳过的理由，
+       网页拖入根本没有那一步，不说就是静默降级。像面不计（和 setvig 一致）。 */
+    var nCir = 0, nSur = out.rows.length;
+    for (var ic = 0; ic + 1 < nSur; ic++) if (out.rows[ic].sd) nCir++;
+    if (nSur && (nCir < 4 || nCir < 0.20 * nSur)) {
+      out.warn.push((nCir
+        ? '只有 ' + nCir + '/' + nSur + ' 个面写了 CIR 通光（' + (100 * nCir / nSur).toFixed(0) + '%）'
+        : '文件里没有任何面写 CIR 通光')
+        + '，达不到按真实通光重算渐晕的门槛（≥4 个面且 ≥20%）'
+        + '——渐晕只能按文件自带的 SETVIG 系数走，工具栏的「一键渐晕」对这颗会跳过。'
+        + (nCir ? 'CODE V 往返重导出常常只保留几个 CIR，手头有原始交付件的话用原始那份。' : ''));
+    }
     return out;
   }
 
@@ -190,7 +205,7 @@ var LENSIO = (function () {
       var tk = ln.split(/\s+/);
       var k = tk[0].toUpperCase();
 
-      if (raw.charAt(0) !== ' ' && k === 'SURF') { cur = { n: +tk[1], parm: [], type: 'STANDARD' }; surfs.push(cur); continue; }
+      if (raw.charAt(0) !== ' ' && k === 'SURF') { cur = { n: +tk[1], parm: [], xdat: [], type: 'STANDARD' }; surfs.push(cur); continue; }
       if (cur && raw.charAt(0) === ' ') {                       // 面内属性都是缩进的
         if (k === 'TYPE') { cur.type = (tk[1] || '').toUpperCase(); continue; }
         if (k === 'CURV') { cur.curv = num(tk[1]); continue; }
@@ -210,6 +225,7 @@ var LENSIO = (function () {
         if (k === 'CONI') { cur.coni = num(tk[1]); continue; }
         if (k === 'DIAM') { cur.diam = num(tk[1]); cur.diamFix = +tk[2] === 1; continue; }
         if (k === 'PARM') { cur.parm[+tk[1]] = num(tk[2]); continue; }
+        if (k === 'XDAT') { cur.xdat[+tk[1]] = num(tk[2]); continue; }
         if (k === 'STOP') { cur.isStop = true; continue; }
         if (k === 'FLAP' || k === 'SQAP') { cur.ap = num(tk[2]); continue; }
         // 厚度解（内对焦镜头靠它保持总长不变，文件里只存了当前结构那一份的结果）
@@ -279,6 +295,24 @@ var LENSIO = (function () {
         while (a.length && a[a.length - 1] === '0') a.pop();
         r.asph = a.join(' ');
         if (r.asph && !r.k) r.k = '0';
+      } else if (s.type === 'XASPHERE') {
+        /* 扩展非球面：系数不在 PARM 里，在 Extra Data 里，而且是**归一化**写的
+             z += Σᵢ αᵢ·(r/Rn)^(2i)      XDAT 1 = 项数 N、XDAT 2 = Rn、XDAT 3 = r² 项、XDAT 4… = r⁴ r⁶ …
+           本页面型按 r 的实际幂次存、从 r⁴ 起，所以要把归一化除掉：第 i 项系数 = XDAT(i+2) / Rn^(2i)。
+           Rn 不除掉的话，Rn≠1 的文件整条面型就错了（Rn=1 时正好等于专利印的 A4…A20）。
+           偶次非球面停在 r¹⁶（PARM 2..8），扩展非球面能到 r²⁰ 甚至更高；
+           内核的 sag 本来就是变长系数数组，多几项不用改算法。 */
+        var xd = s.xdat || [], nT = Math.round(xd[1] || 0), Rn = xd[2] || 1;
+        if (xd[3]) out.warn.push('第 ' + i + ' 面扩展非球面有 r² 项 (XDAT 3 = ' + xd[3] + ')，本页模型没有该项，已忽略。');
+        var ax = [];
+        for (j = 2; j <= nT; j++) {                        // 第 j 项就是 r^(2j)，j = 2 起即 r⁴
+          var cj = xd[j + 2] || 0;
+          ax.push(cj ? fmt(cj / Math.pow(Rn, 2 * j)) : '0');
+        }
+        while (ax.length && ax[ax.length - 1] === '0') ax.pop();
+        r.asph = ax.join(' ');
+        if (r.asph && !r.k) r.k = '0';
+        if (!nT) out.warn.push('第 ' + i + ' 面是扩展非球面，但 Extra Data 里没有项数 (XDAT 1)，已按球面处理。');
       } else if (s.type !== 'STANDARD') {
         out.warn.push('第 ' + i + ' 面类型 ' + s.type + ' 本页不支持，已按球面处理。');
       }

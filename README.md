@@ -239,6 +239,7 @@ LDM 卡片右上角的色标（逆向=琥珀、专利=青）、导入提示的�
 |---|---|
 | `SURF n` / `CURV` / `DISZ` / `GLAS` / `CONI` | 面号、曲率、厚度、玻璃、圆锥系数 |
 | `TYPE STANDARD` / `EVENASPH` + `PARM 2..8` | 偶次非球面 r⁴…r¹⁶ |
+| `TYPE XASPHERE` + `XDAT 1..N` | 扩展非球面。系数在 Extra Data 里、且是**归一化**写的：`XDAT 1` 项数、`XDAT 2` 归一化半径 Rn、`XDAT 3` r² 项、`XDAT 4…` r⁴ r⁶ …，第 i 项系数要除掉 `Rn^(2i)` 才是 r 的实际幂次系数（Rn=1 时正好等于专利印的 A4…A20）。偶次非球面停在 r¹⁶，装不下 r¹⁸ / r²⁰ 的面才会写成这种（适马 50mm F1.4 DG DN Art 的 4 个面就是） |
 | `STOP` | 光阑面 |
 | `THI Sn OAL Sa..Sb v` (.seq) | CODE V 的总长解，等价于 Zemax 的 `TCOM`。CODE V 导出时已把解算完的厚度写进 `S` 行和 `ZOO THI`，所以只作提示、不需要重算 |
 | `TCOM` | 厚度「互补 / Compensator」解：本面厚度 = 值 − 参考面厚度 |

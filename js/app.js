@@ -243,7 +243,15 @@
   }
   function cellT(i, f, v, ph) {
     return '<td class="txt"><input data-r="' + i + '" data-f="' + f + '" value="' + esc(v) + '" placeholder="' + ph +
-      '" spellcheck="false" autocapitalize="off" autocorrect="off"' + (f === 'mat' ? ' list="glassdl"' : '') + '></td>';
+      '" spellcheck="false" autocapitalize="off" autocorrect="off"' + (f === 'mat' && v ? ' list="glassdl"' : '') + '></td>';
+  }
+  /* 玻璃格的补全列表只在格子里有字时挂上。空格子 = 空气（和 Zemax 一样），点进去不该
+     弹出三千多个牌号让人选；开始敲字母才出候选。keydown 在字符落进去之前就把 list
+     挂上，第一个字母就有候选；退格清空后再摘掉。 */
+  function glassListSync(t, willType) {
+    if (t.dataset.f !== 'mat') return;
+    if (willType || t.value.trim()) { if (!t.hasAttribute('list')) t.setAttribute('list', 'glassdl'); }
+    else if (t.hasAttribute('list')) t.removeAttribute('list');
   }
 
   /* ================= 波长表 ================= */
@@ -1098,11 +1106,18 @@
     if (t.tagName !== 'INPUT') return;
     var r = state.rows[+t.dataset.r]; if (!r) return;
     var fld = t.dataset.f;
+    glassListSync(t, false);
     if (fld.charAt(0) === 'a' && /^a\d+$/.test(fld)) setAsphTerm(r, +fld.slice(1), t.value);
     else { r[fld] = t.value; cfgWriteBack(+t.dataset.r, fld, t.value); }
     var tc = tb.querySelector('[data-typ="' + t.dataset.r + '"]');
     if (tc) tc.textContent = isAsph(r) ? '非球面' : '球面';
     schedule(240);
+  });
+  tb.addEventListener('keydown', function (e) {
+    var t = e.target;
+    if (t.tagName !== 'INPUT' || t.dataset.f !== 'mat') return;
+    // 单个可打印字符（不带 Ctrl/Alt）：字符落进去之前先把候选列表挂上
+    if (e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) glassListSync(t, true);
   });
   tb.addEventListener('focusin', function (e) {
     var tr = e.target.closest ? e.target.closest('tr[data-r]') : null;

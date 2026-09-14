@@ -168,6 +168,7 @@ table.lde td.typ{text-align:center;font-size:10.5px;color:var(--ink-3);white-spa
 table.lde input{width:100%;height:24px;border:0;background:transparent;padding:0 7px;
   font:inherit;font-size:11.5px;font-variant-numeric:tabular-nums;text-align:right;border-radius:0}
 table.lde td.txt input{text-align:left}
+table.lde input::-webkit-calendar-picker-indicator{display:none}   /* 玻璃格不要 ▼，敲字母出候选 */
 table.lde thead th:first-child{position:sticky;left:0;z-index:4;background:var(--panel-3)}
 table.lde .ac0{border-left:1px solid var(--line)}
 table.lde th.ac{color:var(--ink-3)}
@@ -549,7 +550,7 @@ table.data tbody tr:hover{background:var(--panel-2)}
 
 <section><h3>多重结构 · 有限物距 · 渐晕</h3><p>.seq 的 <code>ZOO</code> 记录和 .zmx 的 <code>MNUM / THIC / APER / FVCY</code> 都会读进来——结构数、各结构标题、逐结构的 F/# 与面厚度 / 曲率 / 渐晕系数，用工具栏「结构」下拉切换，随结构变化的格子在表里标了色，改这些格子会写回当前结构。物面厚度落到顶栏「物距」，近摄结构按<b>有限共轭</b>追迹：光线从物点发出而非平行入射，F/# 用像方工作 F/#（由近轴边缘光线角 1/(2|u′|) 反解入瞳），状态栏 RED 给放大倍率。70 mm 微距的 1.0X 结构实测放大率 −0.9975，SIGMA 35 的 MFD 结构 −0.2004。<br><b>渐晕</b>：文件里若存了 CODE V 的 <code>SETVIG</code> 系数或 Zemax 的 <code>VDY/VCY</code>，瞳区间直接按它逐视场插值取，不再靠通光孔径反推——很多文件只在像面写 CIR，镜片没有孔径数据，这时这张表是唯一依据。两家的约定不同，统一换算成 CODE V 那套：<code>VUY = VCY − VDY</code>、<code>VLY = VCY + VDY</code>。<br><b>这套系数写在哪套坐标上，取决于文件里的光线瞄准开关</b>（.zmx 的 <code>RAIM</code>）：关瞄准时归一化瞳坐标落在<b>近轴入瞳</b>上，开了才落在<b>光阑面</b>上，而本页一律按光阑坐标算。大视场上两者差很远——FE 16mm F1.8 G 最大视场文件写的 [−0.577, 0.913] 换到光阑上其实是 [−0.510, 0.236]，上缘差 0.68，直接混用会把边角 MTF 整个算错。导入时按文件的 RAIM 判断，关瞄准的文件由 <code>tools/setvig.js</code> 逐视场实光线追迹换算，并在提示里写明换算前后的瞳区间。</p></section>
 
-<section><h3>镜头文件导入</h3><p><b>CODE V .seq</b> 读面数据 / CIR 通光 / ASP 非球面 / STO / FNO / WL·WTW·REF / YRI·YAN / SETVIG / ZOO。<b>Zemax .zmx</b>（UTF-16 或 UTF-8 自动识别）读 SURF·CURV·DISZ·GLAS·CONI·PARM / STOP / FNUM·ENPD / FTYP·YFLN / WAVM·PWAV / VDYN·VCYN / <code>RAIM</code>（光线瞄准开关，决定渐晕系数写在哪套瞳坐标上） / MNUM·THIC·APER·FVCY。网页拖入和命令行批量转换走的是同一份解析代码。<br><b>有意不导入的</b>：Zemax 的 <code>FLAP</code> 浮动通光（逐结构重算，文件里只存了当前结构那一份，套到近摄结构会把边缘光线全挡掉；有渐晕系数时瞳已被完整定义）、多重结构里换玻璃（<code>GLSS</code>）、偶次非球面的 r² 项（<code>PARM 1</code>）、X 视场、非毫米单位——这些都只给提示，不闷声跳过。</p></section>
+<section><h3>镜头文件导入</h3><p><b>CODE V .seq</b> 读面数据 / CIR 通光 / ASP 非球面 / STO / FNO / WL·WTW·REF / YRI·YAN / SETVIG / ZOO。<b>Zemax .zmx</b>（UTF-16 或 UTF-8 自动识别）读 SURF·CURV·DISZ·GLAS·CONI·PARM / <code>XDAT</code>（扩展非球面 <code>XASPHERE</code>，系数按归一化半径换算回 r 的实际幂次，能到 r¹⁸ / r²⁰） / STOP / FNUM·ENPD / FTYP·YFLN / WAVM·PWAV / VDYN·VCYN / <code>RAIM</code>（光线瞄准开关，决定渐晕系数写在哪套瞳坐标上） / MNUM·THIC·APER·FVCY。网页拖入和命令行批量转换走的是同一份解析代码。<br><b>有意不导入的</b>：Zemax 的 <code>FLAP</code> 浮动通光（逐结构重算，文件里只存了当前结构那一份，套到近摄结构会把边缘光线全挡掉；有渐晕系数时瞳已被完整定义）、多重结构里换玻璃（<code>GLSS</code>）、偶次非球面的 r² 项（<code>PARM 1</code>）、X 视场、非毫米单位——这些都只给提示，不闷声跳过。</p></section>
 
 <section><h3>曲线画法</h3><p>MTF-视场图按算出来的视场点用<b>单调三次 Hermite（PCHIP）</b>连线：过每一个点、不在点之间拱出多余波峰，只改画法不改数值。默认视场点 15 个（可选 6…31）；实测 11 / 15 / 31 点画出的曲线几乎重合，说明剩下的起伏是模型的真实结构而不是取样不足。</p></section>
 
