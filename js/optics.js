@@ -39,7 +39,12 @@ var OPT = (function () {
 
   /* 模型玻璃：只给 nd / vd（可再给 ΔPg,F）时用 Conrady 三项拟合。
      ΔPg,F 是「相对正常线的偏离」，Zemax 的模型玻璃第三个参数就是它；
-     不给就落在正常线上（PgF = 0.6438 − 0.001682·vd），异常色散玻璃会失真。 */
+     不给就落在正常线上（PgF = 0.6438 − 0.001682·vd），异常色散玻璃会失真。
+     ⚠ 一对基函数只能表示一段 P(g,F)：Conrady (1/λ, 1/λ^3.5) 的区间是 [0.445, 0.716]。
+     真实玻璃几乎都在 0.53~0.65（实测能把目录玻璃复现到 1e-6~2.4e-4），但反常色散元件会顶出去——
+     佳能 BR（nd 1.5706 / νd 20.10 / ΔPg,F +0.168）要求 0.778，解出来 1/λ 的系数是负的。
+     换成 Schott 型基 (1/λ², 1/λ⁴，区间 [0.541, 0.784]) 系数能回正，但实测对结果没有可见影响
+     （RF 14mm 2.42 → 2.39 µm），而且无从判断哪一种和 Zemax 一致，所以维持现状、只记下这条。 */
   function makeGlass(nd, vd, dPgF) {
     if (!isFinite(nd) || nd <= 1) return function () { return 1; };
     if (!isFinite(vd) || vd <= 0) return function () { return nd; };
@@ -201,11 +206,23 @@ var OPT = (function () {
       if (tk.length > idx) idx++;
       var k = 0;
       if (tk.length > idx) { var kv = parseFloat(tk[idx]); if (isFinite(kv)) k = kv; idx++; }
-      var asph = [];
-      for (; idx < tk.length; idx++) { var av = parseFloat(tk[idx]); asph.push(isFinite(av) ? av : 0); }
-      while (asph.length && asph[asph.length - 1] === 0) asph.pop();
+      /* 非球面系数两种写法：
+           默认         A4 A6 A8 …          —— 偶次，第 i 项是 r^(2i+4)，绝大多数镜头都是这个
+           以 ODD 开头  ODD a1 a2 a3 …      —— r 的**任意整数次幂**，第 j 项是 r^j
+         后者对应 Zemax 的「扩展奇次非球面」(XOSPHERE)，专利里印成 A3…A10 那种带奇数次的级数。
+         偶次那套装不下奇数项，所以单开一个数组；两者互斥，写了 ODD 就整行按通用幂级数算。 */
+      var asph = [], aspo = null;
+      if (idx < tk.length && /^odd$/i.test(tk[idx])) {
+        idx++; aspo = [];
+        for (; idx < tk.length; idx++) { var ov = parseFloat(tk[idx]); aspo.push(isFinite(ov) ? ov : 0); }
+        while (aspo.length && aspo[aspo.length - 1] === 0) aspo.pop();
+        if (!aspo.length) aspo = null;
+      } else {
+        for (; idx < tk.length; idx++) { var av = parseFloat(tk[idx]); asph.push(isFinite(av) ? av : 0); }
+        while (asph.length && asph[asph.length - 1] === 0) asph.pop();
+      }
 
-      surfaces.push({ R: R, T: T, n: mat || AIR, isGlass: !!mat, matLabel: matLabel, sd: sd, k: k, asph: asph });
+      surfaces.push({ R: R, T: T, n: mat || AIR, isGlass: !!mat, matLabel: matLabel, sd: sd, k: k, asph: asph, aspo: aspo });
     }
     if (newList.length) warnings.push('这些是比内置目录快照更新的牌号，库里还没有，已按 nd/vd 代入模型玻璃：' +
       newList.join('、') + '。色散曲线是拟合的，二级光谱会有细微出入；要精确可在「玻璃」列直接写目录公式对应的 nd/vd。');
@@ -250,6 +267,29 @@ var OPT = (function () {
   function parseMaterial(s) {
     var t = s.trim();
     if (t === '-' || t === '' || t.toLowerCase() === 'air') return { fn: null, label: 'air' };
+    /* 玻璃偏移解 `牌号~Δnd~Δνd`（Zemax 的 GLAS 模式 4）：基准玻璃的**色散曲线形状照搬**，
+       只把 nd 和 νd 挪到偏移后的值——相对部分色散 P(g,F) 因此保持不变，这正是这个解的用意
+       （给「没有等效牌号」的元件留住真实色散）。做法是把基准曲线相对 nd 的偏离整体缩放：
+         n(λ) = nd' + k·(n_base(λ) − nd_base)，  k = [(nd'−1)/νd'] / [(nd_base−1)/νd_base]
+       这样 n(d)、n_F−n_C 都精确落在偏移后的 nd / νd 上，而 g−F 与 F−C 的比值不变。 */
+    var ofs = t.indexOf('~');
+    if (ofs > 0) {
+      var op = t.slice(ofs + 1).split('~');
+      var dN = parseFloat(op[0]), dV = parseFloat(op[1]);
+      var base = parseMaterial(t.slice(0, ofs));
+      if (base && base.fn && isFinite(dN) && isFinite(dV)) {
+        var bf = base.fn, ndB = bf(LD), vdB = (ndB - 1) / (bf(LF) - bf(LC));
+        var ndN = ndB + dN, vdN = vdB + dV;
+        if (isFinite(vdN) && vdN > 0) {
+          var kk = ((ndN - 1) / vdN) / ((ndB - 1) / vdB);
+          return { fn: function (l) { return ndN + kk * (bf(l) - ndB); },
+                   glass: base.glass, cat: base.cat, nd: ndN, vd: vdN,
+                   label: String(base.glass || t.slice(0, ofs)).toUpperCase() +
+                          ' (' + ndN.toFixed(5) + '/' + vdN.toFixed(2) + ', 偏移解 Δnd' +
+                          (dN >= 0 ? '+' : '') + dN + ' Δνd' + (dV >= 0 ? '+' : '') + dV + ')' };
+        }
+      }
+    }
     if (t.indexOf('/') >= 0) {
       var pr = t.split('/');
       var nd = parseFloat(pr[0]), vd = parseFloat(pr[1]);
@@ -319,6 +359,13 @@ var OPT = (function () {
       var p = r2 * r2;                                   // r⁴
       for (var i = 0; i < n; i++) { if (A[i]) z += A[i] * p; p *= r2; }
     }
+    /* 通用幂级数（ODD 写法）：奇数次项没法用 r² 递推，这里才开一次平方根。
+       整段用 s.aspo 存在与否门控，普通镜头一行都不会走进来，热路径不受影响。 */
+    var O = s.aspo;
+    if (O) {
+      var r1 = Math.sqrt(r2), q = r1;                    // r¹
+      for (var j = 0; j < O.length; j++) { if (O[j]) z += O[j] * q; q *= r1; }
+    }
     return z;
   }
   function dsagdr(s, r) {
@@ -332,6 +379,11 @@ var OPT = (function () {
     if (n) {
       var p = r2 * r;                                    // r³
       for (var i = 0; i < n; i++) { if (A[i]) d += (4 + 2 * i) * A[i] * p; p *= r2; }
+    }
+    var O = s.aspo;
+    if (O) {
+      var q = 1;                                         // r⁰
+      for (var j = 0; j < O.length; j++) { if (O[j]) d += (j + 1) * O[j] * q; q *= r; }
     }
     return d;
   }
@@ -352,6 +404,14 @@ var OPT = (function () {
       for (var i = 0; i < n; i++) {
         if (A[i]) { z += A[i] * p4; d += (4 + 2 * i) * A[i] * p3; }
         p3 *= r2; p4 *= r2;
+      }
+    }
+    var O = s.aspo;
+    if (O) {
+      var q0 = 1, q1 = r;                                // r⁰ / r¹
+      for (var j = 0; j < O.length; j++) {
+        if (O[j]) { z += O[j] * q1; d += (j + 1) * O[j] * q0; }
+        q0 *= r; q1 *= r;
       }
     }
     out[0] = z; out[1] = d; return out;
@@ -479,7 +539,9 @@ var OPT = (function () {
         }
       }
     }
-    if (!s.asph.length) return (t === null || !isFinite(t)) ? null : t;
+    // 圆锥解只有在「没有任何高次项」时才是精确解 —— 通用幂级数 (aspo) 也算高次项，
+    // 漏判这一条，奇次非球面就会被当成纯圆锥面求交，面型白读了
+    if (!s.asph.length && !s.aspo) return (t === null || !isFinite(t)) ? null : t;
 
     // 非球面：从圆锥解出发牛顿精修；圆锥解不存在就先扫描兜一个
     if (t === null || !isFinite(t)) { t = asphHit(s, px, py, pz, D); if (t === null) return null; }

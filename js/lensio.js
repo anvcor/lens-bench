@@ -220,6 +220,16 @@ var LENSIO = (function () {
               isFinite(mNd) && mNd > 1 && isFinite(mVd) && mVd > 0)
             cur.glas = mNd.toFixed(6) + '/' + mVd.toFixed(4) +
                        (isFinite(mDp) && mDp ? '/' + mDp.toFixed(6) : '');
+          /* Zemax 的**玻璃偏移解**（GLAS 第二个数 = 4）：用的是目录牌号，但把 nd / νd
+             各偏移一点，末两个字段就是 Δnd 和 Δνd。专利仿真里常用它来还原「没有等效牌号」
+             的元件——保住基准玻璃的色散曲线形状，只挪一阶量。CODE V 没有这个解。
+             漏读它等于用了没加偏移的目录玻璃：佳能 RF 14/20 的 S-NBH52V 偏移了
+             **Δνd = −2.656**（38.26 → 35.60），正是做色差校正的那片，轴向色差会整个散掉。 */
+          else if (mFlag === 4) {
+            var dN = num(tk[10]), dV = num(tk[11]);
+            if ((isFinite(dN) && dN) || (isFinite(dV) && dV))
+              cur.glas = tk[1] + '~' + (isFinite(dN) ? dN : 0) + '~' + (isFinite(dV) ? dV : 0);
+          }
           continue;
         }
         if (k === 'CONI') { cur.coni = num(tk[1]); continue; }
@@ -313,6 +323,20 @@ var LENSIO = (function () {
         r.asph = ax.join(' ');
         if (r.asph && !r.k) r.k = '0';
         if (!nT) out.warn.push('第 ' + i + ' 面是扩展非球面，但 Extra Data 里没有项数 (XDAT 1)，已按球面处理。');
+      } else if (s.type === 'XOSPHERE') {
+        /* 扩展**奇次**非球面：和 XASPHERE 一样把系数放在 Extra Data 里、按归一化半径写，
+           但幂次是 r 的**每一个整数次**（专利里印成 A3…A10 那种）：
+             XDAT 1 = 项数 N、XDAT 2 = Rn、XDAT 3… = r¹ r² r³ …，第 j 项系数 / Rn^j 才是 r 的实际系数。
+           本页面型的默认那套只有偶次（r⁴ r⁶ r⁸…），装不下奇数项，所以写成 ODD 通用幂级数。 */
+        var xo = s.xdat || [], nO = Math.round(xo[1] || 0), Ro = xo[2] || 1;
+        var ao = [];
+        for (j = 1; j <= nO; j++) {
+          var oj = xo[j + 2] || 0;
+          ao.push(oj ? fmt(oj / Math.pow(Ro, j)) : '0');
+        }
+        while (ao.length && ao[ao.length - 1] === '0') ao.pop();
+        if (ao.length) { r.asph = 'ODD ' + ao.join(' '); if (!r.k) r.k = '0'; }
+        else out.warn.push('第 ' + i + ' 面是扩展奇次非球面，但 Extra Data 里没有系数，已按球面处理。');
       } else if (s.type !== 'STANDARD') {
         out.warn.push('第 ' + i + ' 面类型 ' + s.type + ' 本页不支持，已按球面处理。');
       }

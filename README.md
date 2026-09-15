@@ -240,11 +240,13 @@ LDM 卡片右上角的色标（逆向=琥珀、专利=青）、导入提示的�
 | `SURF n` / `CURV` / `DISZ` / `GLAS` / `CONI` | 面号、曲率、厚度、玻璃、圆锥系数 |
 | `TYPE STANDARD` / `EVENASPH` + `PARM 2..8` | 偶次非球面 r⁴…r¹⁶ |
 | `TYPE XASPHERE` + `XDAT 1..N` | 扩展非球面。系数在 Extra Data 里、且是**归一化**写的：`XDAT 1` 项数、`XDAT 2` 归一化半径 Rn、`XDAT 3` r² 项、`XDAT 4…` r⁴ r⁶ …，第 i 项系数要除掉 `Rn^(2i)` 才是 r 的实际幂次系数（Rn=1 时正好等于专利印的 A4…A20）。偶次非球面停在 r¹⁶，装不下 r¹⁸ / r²⁰ 的面才会写成这种（适马 50mm F1.4 DG DN Art 的 4 个面就是） |
+| `TYPE XOSPHERE` + `XDAT 1..N` | 扩展**奇次**非球面。同样在 Extra Data 里、同样按 Rn 归一化，但幂次是 r 的**每一个整数次**：`XDAT 3…` 依次是 r¹ r² r³ …，第 j 项系数除掉 `Rn^j`。偶次那套装不下奇数项，所以在 LDM 里存成 `ODD a1 a2 a3 …`（见下文「非球面的两种写法」）。佳能 RF 28mm F2.8 STM 的 6 个面就是这种，专利印成 A3…A10 |
 | `STOP` | 光阑面 |
 | `THI Sn OAL Sa..Sb v` (.seq) | CODE V 的总长解，等价于 Zemax 的 `TCOM`。CODE V 导出时已把解算完的厚度写进 `S` 行和 `ZOO THI`，所以只作提示、不需要重算 |
 | `TCOM` | 厚度「互补 / Compensator」解：本面厚度 = 值 − 参考面厚度 |
 | `TOLE` | 厚度「位置 / Position」解：参考面到本面（含）的厚度之和 = 值 |
 | ↑ 两种解 | 都是内对焦的写法（总长不变、中间组移动）。文件里存的 `DISZ` 只是当前结构那一份，**其余结构必须按解重算**，否则近摄结构会被当成整组前伸——总长会跟着缩，MTF 直接崩掉（Sony FE 85mm F1.4 GM 一代不算这个解，MFD 结构 RMS 会到 2989 µm） |
+| `GLAS name 4 … Δnd Δνd` | **玻璃偏移解**：用目录牌号，但把 nd / νd 各偏移一点（末两个字段）。专利仿真里用来还原「没有等效牌号」的元件——保住基准玻璃的色散曲线形状，只挪一阶量，CODE V 没有这个解。存成 `牌号~Δnd~Δνd`。**漏读它等于用了没加偏移的目录玻璃**：佳能 RF 14/20 的 S-NBH52V 偏移了 Δνd = −2.656（38.26 → 35.60），正是做色差校正的那片，轴上 RMS 会从 2.5 µm 变成 106 µm |
 | `FNUM` / `ENPD` | F/# 或入瞳直径。`FNUM x 0` 是 Zemax 的 Image Space F/#（EFL/入瞳，有限共轭也按无限远定义）→ `apmode: "fnoinf"`；`FNUM x 1` 是 Paraxial Working F/# → `apmode: "fno"` |
 | `FTYP` / `YFLN` | 视场类型（0 角度 / 2 近轴像高 / 3 实像高）与视场值 |
 | `WAVM` / `PWAV` | 波长、权重、主波长 |
@@ -316,6 +318,9 @@ Zemax 的视场表通常从大到小，转换时会重排成由小到大，渐�
   "src":  "SIGMA 35mm F1.4 DG Art II E2.zmx",
   "kind": "zmx",
   "tx":   "82.38  2.45  S-NPH4  -\n…",       // 每行：R 厚度 玻璃 半通光 [圆锥 A4 A6 …]
+                                             // 非球面两种写法：默认 A4 A6 A8 …（偶次，第 i 项 r^(2i+4)）；
+                                             // 以 ODD 开头则是 ODD a1 a2 a3 …（r 的任意整数次幂，第 j 项 r^j）。
+                                             // 两者互斥，后者对应 Zemax 的 XOSPHERE，专利里印成 A3…A10 那种。
   "stop": 12,                                 // 1 起
   "fno": 1.47, "apmode": "fnoinf",
   "fmode": "height", "fov": 21.6, "nfield": 6,
