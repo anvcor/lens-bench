@@ -1560,7 +1560,312 @@ var OPT = (function () {
     return pts;
   }
 
+  /* ================= 点列图 / 虚化光斑（Spot） =================
+     镜头结构和像面都不动，只把物点前后移：对焦物距上是像差光斑，焦前 / 焦后是离焦光斑
+     （虚化的形状就是它——猫眼、球差亮环、色边都从这里出来）。全部是几何追迹，
+     400 µm 量级的离焦盘上衍射没有意义，不做。
+
+     瞳采样在光阑面的归一化坐标里分层随机（抖动网格裁圆），每条光线都瞄准光阑，
+     所以采样区就是光阑本身。谁把光线挡掉，决定了光斑的形状：
+       · 有「写死的」真实通光（CIR / 固定 DIAM / FLAP，opt.sdAp）且面数够（门槛同 setvig：
+         ≥4 个面且 ≥20%）→ 逐面裁剪，猫眼是真的；
+       · 不够 → 退回 sys.vig 的渐晕系数（文件自带或「一键渐晕」算的），按视场取等效椭圆瞳，
+         光斑只能是椭圆。调用方应把这件事标在图下面。
+     瞳坐标用随机数是为了不出现网格伪影；种子固定，同样参数两次结果一样。 */
+  function mulberry32(a) {
+    return function () {
+      a |= 0; a = a + 0x6D2B79F5 | 0;
+      var t = Math.imul(a ^ a >>> 15, 1 | a);
+      t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
+      return ((t ^ t >>> 14) >>> 0) / 4294967296;
+    };
+  }
+  function hardApertures(sys, opt) {
+    var S = sys.surfaces, n = S.length, out = new Array(n), cnt = 0;
+    var sdAp = (opt.sdAp && opt.sdAp.length === n) ? opt.sdAp : null;
+    for (var i = 0; i < n; i++) {
+      var a = (i === sys.stopIdx) ? 0 : (S[i].sd || (sdAp && sdAp[i]) || 0);
+      out[i] = a > 0 ? a : null;
+      if (i < n - 1 && a > 0) cnt++;
+    }
+    return (cnt >= 4 && cnt >= 0.2 * n) ? out : null;
+  }
+  /* 视场 th 上瞳的椭圆（没有硬通光时用）：{cx, cy, ax, ay}，归一化光阑坐标 */
+  function pupilEllipse(sys, th, lam) {
+    var spY = pupilSpan(sys, th, lam, 'y');
+    if (!spY) return null;
+    var spX = pupilSpan(sys, th, lam, 'x', (spY.hi + spY.lo) / 2);
+    if (!spX) return null;
+    return { cx: (spX.hi + spX.lo) / 2, ax: (spX.hi - spX.lo) / 2, cy: (spY.hi + spY.lo) / 2, ay: (spY.hi - spY.lo) / 2 };
+  }
+  /* 瞄准表：同一（视场、物距）下「光阑归一化坐标 → 入瞳起点」是光滑映射，按主波长在
+     极坐标粗网格（AIM_NR 圈 × AIM_NA 角）上精确瞄一遍，其余瞳点双线性插值。
+     每条光线省掉 3~4 次部分追迹（实测瞄准占单条成本的 4/5）。波长间的差别是瞳像差的色差，
+     远小于插值误差；Bokeh_Simulation 也只按主波长瞄。插值格子有一角瞄不到就退回逐条瞄。 */
+  var AIM_NR = 8, AIM_NA = 24;
+  /* 表里存的不是入瞳坐标本身，而是它减去一个仿射预测之后的残差。
+     「光阑坐标 → 入瞳起点」= 仿射变换（主光线 + 雅可比）+ 很小的瞳像差残差；
+     直接对坐标做角向线性插值，圆会被插成 AIM_NA 边形（离焦盘边缘肉眼可见的多边形就是它），
+     而仿射部分对圆是精确的，只插残差，弦误差就只剩残差的那一点点。
+     仿射系数由全部瞄成功的节点最小二乘拟合。 */
+  function aimTable(sys, th, lam) {
+    if (!sys.aiming) return null;
+    var n = (AIM_NR + 1) * AIM_NA, ex = new Float64Array(n), ey = new Float64Array(n), ok = new Uint8Array(n);
+    var us = new Float64Array(n), vs = new Float64Array(n);
+    var sd = sys.sdStop * 0.9995;
+    for (var i = 0; i <= AIM_NR; i++) {
+      var r = i / AIM_NR;
+      for (var j = 0; j < AIM_NA; j++) {
+        var k = i * AIM_NA + j, phi = 2 * Math.PI * j / AIM_NA;
+        us[k] = r * Math.cos(phi); vs[k] = r * Math.sin(phi);
+        if (i === 0 && j > 0) { ex[k] = ex[0]; ey[k] = ey[0]; ok[k] = ok[0]; continue; }   // 圆心只有一个点
+        var a = aim(sys, th, us[k] * sd, vs[k] * sd, lam);
+        if (a) { ex[k] = a.ex; ey[k] = a.ey; ok[k] = 1; }
+      }
+    }
+    // 最小二乘仿射：ex ≈ A[0] + A[1] u + A[2] v，ey ≈ B[0] + B[1] u + B[2] v
+    var S = [0, 0, 0, 0, 0, 0], tx = [0, 0, 0], ty = [0, 0, 0], m = 0;   // S: n, Σu, Σv, Σuu, Σuv, Σvv
+    for (k = 0; k < n; k++) {
+      if (!ok[k] || (k > 0 && k % AIM_NA !== 0 && k < AIM_NA)) continue;      // 圆心的重复点只算一次
+      var u = us[k], v = vs[k];
+      S[0]++; S[1] += u; S[2] += v; S[3] += u * u; S[4] += u * v; S[5] += v * v;
+      tx[0] += ex[k]; tx[1] += ex[k] * u; tx[2] += ex[k] * v;
+      ty[0] += ey[k]; ty[1] += ey[k] * u; ty[2] += ey[k] * v; m++;
+    }
+    var A = [0, 0, 0], B = [0, 0, 0];
+    if (m >= 3) {
+      var M = [[S[0], S[1], S[2]], [S[1], S[3], S[4]], [S[2], S[4], S[5]]];
+      var det = M[0][0] * (M[1][1] * M[2][2] - M[1][2] * M[2][1]) - M[0][1] * (M[1][0] * M[2][2] - M[1][2] * M[2][0]) + M[0][2] * (M[1][0] * M[2][1] - M[1][1] * M[2][0]);
+      if (Math.abs(det) > 1e-18) {
+        var inv = [
+          [(M[1][1] * M[2][2] - M[1][2] * M[2][1]) / det, (M[0][2] * M[2][1] - M[0][1] * M[2][2]) / det, (M[0][1] * M[1][2] - M[0][2] * M[1][1]) / det],
+          [(M[1][2] * M[2][0] - M[1][0] * M[2][2]) / det, (M[0][0] * M[2][2] - M[0][2] * M[2][0]) / det, (M[0][2] * M[1][0] - M[0][0] * M[1][2]) / det],
+          [(M[1][0] * M[2][1] - M[1][1] * M[2][0]) / det, (M[0][1] * M[2][0] - M[0][0] * M[2][1]) / det, (M[0][0] * M[1][1] - M[0][1] * M[1][0]) / det]];
+        for (i = 0; i < 3; i++) for (j = 0; j < 3; j++) { A[i] += inv[i][j] * tx[j]; B[i] += inv[i][j] * ty[j]; }
+      }
+    }
+    for (k = 0; k < n; k++) if (ok[k]) { ex[k] -= A[0] + A[1] * us[k] + A[2] * vs[k]; ey[k] -= B[0] + B[1] * us[k] + B[2] * vs[k]; }
+    return { ex: ex, ey: ey, ok: ok, A: A, B: B };
+  }
+  function aimLookup(tab, u, v) {
+    var r = Math.sqrt(u * u + v * v); if (r > 1) r = 1;
+    var phi = Math.atan2(v, u); if (phi < 0) phi += 2 * Math.PI;
+    var fr = r * AIM_NR, i0 = Math.min(Math.floor(fr), AIM_NR - 1), a = fr - i0;
+    var fp = phi / (2 * Math.PI) * AIM_NA, jf = Math.floor(fp), b = fp - jf, j0 = jf % AIM_NA, j1 = (j0 + 1) % AIM_NA;
+    var k00 = i0 * AIM_NA + j0, k01 = i0 * AIM_NA + j1, k10 = k00 + AIM_NA, k11 = k01 + AIM_NA;
+    var ok = tab.ok;
+    if (!(ok[k00] && ok[k01] && ok[k10] && ok[k11])) return null;
+    var w00 = (1 - a) * (1 - b), w01 = (1 - a) * b, w10 = a * (1 - b), w11 = a * b;
+    var A = tab.A, B = tab.B;
+    return { ex: A[0] + A[1] * u + A[2] * v + w00 * tab.ex[k00] + w01 * tab.ex[k01] + w10 * tab.ex[k10] + w11 * tab.ex[k11],
+             ey: B[0] + B[1] * u + B[2] * v + w00 * tab.ey[k00] + w01 * tab.ey[k01] + w10 * tab.ey[k10] + w11 * tab.ey[k11] };
+  }
+  /* 一条瞳点 (u,v) 的光线追到像面。ap 非空按真实通光裁；tab 非空用瞄准表；返回 null = 被挡 */
+  function spotRay(sys, th, u, v, lam, ap, tab) {
+    var q = tab ? aimLookup(tab, u, v) : null;
+    if (!q) q = pupilXY(sys, th, u, v, lam);
+    if (!q) return null;
+    var st = startRay(sys, th, q.ex, q.ey);
+    var r = traceRay(sys, st.P, st.D, lam, false, undefined, !!ap, ap);
+    if (!r.ok) return null;
+    if (ap && r.apMax > 1.0000001) return null;
+    if (Math.abs(r.D[2]) < 1e-12) return null;
+    var t = (sys.zImg - r.P[2]) / r.D[2];
+    return [r.P[0] + t * r.D[0], r.P[1] + t * r.D[1]];
+  }
+  function sysAtDepth(sys, opt, D) {
+    var s = buildSystem(sys.surfaces, Object.assign({}, opt, { objDist: D }));
+    s.vig = sys.vig;                              // 渐晕表跟结构走，不跟物距走
+    return s;
+  }
+  /* 轴上物点在各物距处的几何离焦光斑外径（µm，红绿蓝合并）——给物距搜索用。
+     沿光阑半径取一排光线，取像面上 |x| 的最大值 ×2。 */
+  var BLUR_RGB = [0.620, 0.545, 0.465];
+  function axialBlur(sys, opt, depths) {
+    var ap = hardApertures(sys, opt), n = 400, out = [];
+    for (var di = 0; di < depths.length; di++) {
+      var s = sysAtDepth(sys, opt, depths[di]), best = 0, tab = aimTable(s, 0, BLUR_RGB[1]);
+      for (var li = 0; li < BLUR_RGB.length; li++)
+        for (var k = 0; k < n; k++) {
+          var h = spotRay(s, 0, (k + 0.5) / n, 0, BLUR_RGB[li], ap, tab);
+          if (h && Math.abs(h[0]) > best) best = Math.abs(h[0]);
+        }
+      out.push(2000 * best);
+    }
+    return out;
+  }
+  /* 求焦后（更远）/ 焦前（更近）两个物距，使轴上离焦光斑外径 = targetUm。
+     在 u = 1/物距 上两轮网格 + 插值（离焦光斑直径近似 ∝ |u − u_f|），照 Bokeh_Simulation 的做法。
+     无限远对焦只有焦前。返回 {focus, focusUm, back, backUm, backReached, front, frontUm, frontReached} */
+  function defocusDepths(sys, opt, targetUm) {
+    var Df = sys.objDist, efl = Math.abs(sys.efl), epd = sys.epd;
+    var fin = isFinite(Df) && Df > 0;
+    var uf = fin ? 1 / Df : 0;
+    var du0 = (targetUm / 1000) / Math.max(efl * epd, 1e-9);
+    var Dmin = fin ? Math.max(1, 0.03 * Math.min(Df, 1e5)) : Math.max(1, 3 * efl);
+    var uMax = 1 / Dmin;
+    var ks = []; for (var i = 0; i < 25; i++) ks.push(Math.pow(2, -3 + 6 * i / 24));
+    var depthOf = function (u) { return u <= 0 ? Infinity : 1 / u; };
+    var sides = fin ? { back: -1, front: 1 } : { front: 1 };
+    var grid = {}, side;
+    for (side in sides) {
+      var dus = [];
+      if (sides[side] < 0) { for (i = 0; i < ks.length; i++) if (uf - ks[i] * du0 > 0) dus.push(ks[i] * du0); dus.push(uf); }
+      else { for (i = 0; i < ks.length; i++) if (uf + ks[i] * du0 < uMax) dus.push(ks[i] * du0); dus.push(uMax - uf); }
+      dus.sort(function (a, b) { return a - b; });
+      grid[side] = dus.filter(function (v, j, arr) { return j === 0 || v !== arr[j - 1]; });
+    }
+    var allu = [uf]; for (side in grid) for (i = 0; i < grid[side].length; i++) allu.push(uf + sides[side] * grid[side][i]);
+    var b = axialBlur(sys, opt, allu.map(depthOf));
+    var res = { focus: Df, focusUm: b[0], targetUm: targetUm };
+    var pos = 1, brackets = {};
+    for (side in grid) {
+      var g = grid[side], bs = b.slice(pos, pos + g.length); pos += g.length;
+      var idx = -1; for (i = 0; i < bs.length; i++) if (bs[i] >= targetUm) { idx = i; break; }
+      if (idx < 0) {
+        brackets[side] = null;
+        res[side] = depthOf(uf + sides[side] * g[g.length - 1]); res[side + 'Um'] = bs[bs.length - 1]; res[side + 'Reached'] = false;
+      } else brackets[side] = [idx === 0 ? [0, b[0]] : [g[idx - 1], bs[idx - 1]], [g[idx], bs[idx]]];
+    }
+    var fine = {}, us2 = [], order = [];
+    for (side in brackets) if (brackets[side]) {
+      var br = brackets[side], arr = [];
+      for (i = 1; i < 13; i++) arr.push(br[0][0] + (br[1][0] - br[0][0]) * i / 13);
+      fine[side] = arr; order.push(side);
+      for (i = 0; i < arr.length; i++) us2.push(uf + sides[side] * arr[i]);
+    }
+    if (order.length) {
+      var b2 = axialBlur(sys, opt, us2.map(depthOf)), p2 = 0;
+      for (var oi = 0; oi < order.length; oi++) {
+        side = order[oi];
+        var pts = [brackets[side][0]];
+        for (i = 0; i < fine[side].length; i++) pts.push([fine[side][i], b2[p2 + i]]);
+        p2 += fine[side].length; pts.push(brackets[side][1]);
+        var ii = pts.length - 1; for (i = 0; i < pts.length; i++) if (pts[i][1] >= targetUm) { ii = i; break; }
+        var p0 = pts[Math.max(ii - 1, 0)], p1 = pts[ii];
+        var du = (p1[1] === p0[1]) ? p1[0] : p0[0] + (targetUm - p0[1]) * (p1[0] - p0[0]) / (p1[1] - p0[1]);
+        res[side] = depthOf(uf + sides[side] * du); res[side + 'Reached'] = true;
+      }
+      var chk = axialBlur(sys, opt, order.map(function (s2) { return res[s2]; }));
+      for (oi = 0; oi < order.length; oi++) res[order[oi] + 'Um'] = chk[oi];
+    }
+    return res;
+  }
+  /* 点列图主入口。
+       opt.spotDepths  [{D, role}]   物距（mm，Infinity = 无限远）及标签
+       opt.spotFields  [deg]         视场角（三行共用同一组物方角度）
+       opt.spotRays    每波长每视场的瞳点数（默认 2000）
+       opt.spotLambdas 参与的波长下标（默认全部 opt.lambdas）
+     返回 { depths:[{ D, role, fields:[{ th, cx, cy, diam, rms, T, pts:[Float32Array …] }] }],
+            lambdas:[nm…], primary, nRays, vigMode:'aperture'|'ellipse' }
+     cx,cy = 主光线落点；diam = 全部波长落点离主光线的最大距离 ×2（µm）；
+     rms = 主波长落点对自身质心的 RMS（µm）；T = 主波长通过率。pts 里是各波长的 (x,y) 交错，mm。 */
+  /* ---------- 采样：分层随机瞳点；成像：落点散点（普通点列图） ----------
+     瞳面在光阑归一化坐标上取抖动网格裁圆（分层随机，种子固定、可复现），每条光线追到像面
+     记一个落点。画的时候每个落点点亮一个像素（各波长按颜色叠加），就是 Zemax / CODE V
+     那种点列图，只是点数按档位给到几万到几十万。不做衍射，也不做面积铺能量。
+     统计口径：T = 主波长下圆内瞳点的通过率；D = 全部波长落点离主光线的最大距离 ×2；
+     rms = 主波长落点对自身质心的 RMS。 */
+  function spotPrepare(sys, opt) {
+    var wl = opt.lambdas, pri = opt.primary || 0;
+    var use = opt.spotLambdas || wl.map(function (_, i) { return i; });
+    var fields = opt.spotFields, depths = opt.spotDepths, lam0 = wl[pri].nm / 1000;
+    var ap = hardApertures(sys, opt), nAp = 0;
+    if (ap) for (var q = 0; q + 1 < ap.length; q++) if (ap[q]) nAp++;
+    var priPos = use.indexOf(pri); if (priPos < 0) priPos = 0;
+    var R = opt.spotRays || 50000;
+    var ctx = { ap: ap, use: use, lam: use.map(function (k) { return wl[k].nm / 1000; }), priPos: priPos,
+                lambdas: use.map(function (k) { return wl[k].nm; }), vigMode: ap ? 'aperture' : 'ellipse',
+                nAp: nAp, nSur: sys.surfaces.length, R: R, nRays: 0, depths: [] };
+    for (var di = 0; di < depths.length; di++) {
+      var s = sysAtDepth(sys, opt, depths[di].D), row = { D: depths[di].D, role: depths[di].role, s: s, fields: [] };
+      for (var fi = 0; fi < fields.length; fi++) {
+        var th = fields[fi], tab = aimTable(s, th, lam0);
+        var ch = spotRay(s, th, 0, 0, lam0, null, tab) || [0, 0];
+        row.fields.push({ th: th, tab: tab, ell: ap ? null : pupilEllipse(s, th, lam0), cx: ch[0], cy: ch[1], grids: [] });
+      }
+      ctx.depths.push(row);
+    }
+    return ctx;
+  }
+  /* 追一个（物距 × 视场 × 波长）：约 R 个分层随机瞳点。结果存进 ctx，也返回。 */
+  function spotTrace(ctx, di, fi, li) {
+    var row = ctx.depths[di], F = row.fields[fi], lam = ctx.lam[li];
+    var side = Math.max(4, Math.round(Math.sqrt(ctx.R * 4 / Math.PI)));
+    var rnd = mulberry32(0x5eed + di * 7919 + fi * 104729 + li * 1299709);
+    var cap = side * side, xs = new Float32Array(cap), ys = new Float32Array(cap), n = 0, nIn = 0;
+    for (var i = 0; i < side; i++) for (var j = 0; j < side; j++) {
+      var u = -1 + (i + rnd()) * 2 / side, v = -1 + (j + rnd()) * 2 / side;
+      if (u * u + v * v > 1) continue;
+      nIn++;
+      if (F.ell) { var eu = (u - F.ell.cx) / F.ell.ax, ev = (v - F.ell.cy) / F.ell.ay; if (eu * eu + ev * ev > 1) continue; }
+      ctx.nRays++;
+      var h = spotRay(row.s, F.th, u, v, lam, ctx.ap, F.tab);
+      if (!h) continue;
+      xs[n] = h[0]; ys[n] = h[1]; n++;
+    }
+    var g = { xs: xs.subarray(0, n), ys: ys.subarray(0, n), n: n, nIn: nIn };
+    F.grids[li] = g;
+    return g;
+  }
+  function spotStats(ctx, di, fi) {
+    var F = ctx.depths[di].fields[fi], G = F.grids, P = G[ctx.priPos];
+    var rmax2 = 0, sx = 0, sy = 0, sxx = 0, syy = 0;
+    for (var li = 0; li < G.length; li++) {
+      var g = G[li]; if (!g) continue;
+      for (var k = 0; k < g.n; k++) {
+        var dx = g.xs[k] - F.cx, dy = g.ys[k] - F.cy, d2 = dx * dx + dy * dy;
+        if (d2 > rmax2) rmax2 = d2;
+      }
+    }
+    var rms = 0, T = 0;
+    if (P && P.n) {
+      for (k = 0; k < P.n; k++) { sx += P.xs[k]; sy += P.ys[k]; sxx += P.xs[k] * P.xs[k]; syy += P.ys[k] * P.ys[k]; }
+      var mx = sx / P.n, my = sy / P.n;
+      rms = 1000 * Math.sqrt(Math.max(0, sxx / P.n - mx * mx + syy / P.n - my * my));
+      T = P.nIn ? P.n / P.nIn : 0;
+    }
+    return { th: F.th, cx: F.cx, cy: F.cy, diam: 2000 * Math.sqrt(rmax2), rms: rms, T: T };
+  }
+  /* 把一格的落点点到 W×W 的 RGB 计数图上（每个落点 = 它所在的那个像素 +1，按波长颜色）。
+     half = 格子半宽（mm）。白平衡：每通道除以 Σ w·c，让无渐晕的均匀盘是白的、色边才是色差。 */
+  function spotRaster(ctx, di, fi, half, W, colors, weights) {
+    var F = ctx.depths[di].fields[fi], acc = new Float32Array(W * W * 3);
+    var scl = (W / 2) / half, S = [0, 0, 0];
+    for (var li = 0; li < colors.length; li++) for (var c = 0; c < 3; c++) S[c] += weights[li] * colors[li][c];
+    for (li = 0; li < F.grids.length; li++) {
+      var g = F.grids[li]; if (!g) continue;
+      var w = weights[li];
+      var cr = colors[li][0] * w / Math.max(S[0], 1e-6), cg = colors[li][1] * w / Math.max(S[1], 1e-6), cb = colors[li][2] * w / Math.max(S[2], 1e-6);
+      for (var k = 0; k < g.n; k++) {
+        var px = Math.floor((g.xs[k] - F.cx) * scl + W / 2), py = Math.floor((F.cy - g.ys[k]) * scl + W / 2);
+        if (px < 0 || py < 0 || px >= W || py >= W) continue;
+        var o = (py * W + px) * 3;
+        acc[o] += cr; acc[o + 1] += cg; acc[o + 2] += cb;
+      }
+    }
+    return acc;
+  }
+  /* 一次性封装（命令行 / 校验用）：全部追完，返回每格统计和各波长的角点。 */
+  function spotDiagram(sys, opt) {
+    var ctx = spotPrepare(sys, opt);
+    var out = { depths: [], lambdas: ctx.lambdas, primary: ctx.priPos, R: ctx.R, vigMode: ctx.vigMode, nRays: 0 };
+    for (var di = 0; di < ctx.depths.length; di++) {
+      var row = { D: ctx.depths[di].D, role: ctx.depths[di].role, fields: [] };
+      for (var fi = 0; fi < ctx.depths[di].fields.length; fi++) {
+        for (var li = 0; li < ctx.lam.length; li++) spotTrace(ctx, di, fi, li);
+        row.fields.push(Object.assign({ grids: ctx.depths[di].fields[fi].grids }, spotStats(ctx, di, fi)));
+      }
+      out.depths.push(row);
+    }
+    out.nRays = ctx.nRays;
+    return out;
+  }
+
   return {
+    spotDiagram: spotDiagram, spotPrepare: spotPrepare, spotTrace: spotTrace, spotStats: spotStats, spotRaster: spotRaster,
+    _aimLookup: aimLookup,
+    defocusDepths: defocusDepths, axialBlur: axialBlur, hardApertures: hardApertures,
     CATALOG: CATALOG, FORMULA: FORMULA, makeGlass: makeGlass, parsePrescription: parsePrescription,
     glassCount: glassCount, glassNames: glassNames, glassCatalogs: glassCatalogs, parseMaterial: parseMaterial,
     paraxFromObject: paraxFromObject, pupilSpan: pupilSpan,

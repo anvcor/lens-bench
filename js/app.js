@@ -559,6 +559,7 @@
         msgs.push('波前 PV 达 ' + pvm.toFixed(0) + ' λ，超出 ' + st.ngrid + '² 瞳网格的相位取样能力，衍射 MTF 可能失真——请调大瞳面网格或改用几何模式。');
     }
     last = { sys: sys, mtf: mtf, lay: lay, aber: aber, fan: fan, opt: opt, st: st, dt: dt, surfaces: p.surfaces };
+    spotStale();
     showMsgs(msgs);
     $('surfBadge').textContent = p.surfaces.length + ' 面 · ' + p.surfaces.filter(function (s) { return s.isGlass; }).length + ' 片';
     renderStatus();
@@ -1438,6 +1439,197 @@
     if (!$('aboutSheet').hidden) { e.preventDefault(); aboutOpen(false); }
     else if (!$('cmpSheet').hidden) { e.preventDefault(); cmpOpen(false); }
   });
+
+  /* ================= Spot · 虚化光斑 =================
+     只在按下「生成」时算——一次上百万条光线，不能跟着每次编辑自动跑。
+     计算放在 Web Worker：把 glassdb + optics 的源码原样取出来塞进一个 Blob worker
+     （单文件版从内联 <script> 取文本，静态站用 fetch 读文件），主线程只管色调映射和写字。
+     Worker 逐格追迹、逐格铺成辐照度图发回来，进度条按步数走，格子算完一格画一格。 */
+  var SPOT = { worker: null, prep: null, meta: null, t0: 0, seq: 0, hasImg: false };
+  function spotWorkerMain() {
+    self.onmessage = function (e) {
+      var m = e.data;
+      if (m.cmd !== 'run') return;
+      var p = OPT.parsePrescription(m.tx);
+      var sys = OPT.buildSystem(p.surfaces, m.opt);
+      if (m.vig) sys.vig = m.vig;
+      var dd = OPT.defocusDepths(sys, m.opt, m.targetUm);
+      var depths = [{ D: dd.focus, role: 'focus' }];
+      if (dd.back !== undefined) depths.push({ D: dd.back, role: 'back' });
+      depths.push({ D: dd.front, role: 'front' });
+      var o = Object.assign({}, m.opt, { spotDepths: depths, spotFields: m.fields, spotLambdas: m.lamIdx, spotRays: m.R });
+      var ctx = OPT.spotPrepare(sys, o);
+      var nD = depths.length, nF = m.fields.length, nL = ctx.lam.length;
+      var total = nD * nF * nL + nD * nF, step = 0;
+      self.postMessage({ type: 'prep', dd: dd, depths: depths, vigMode: ctx.vigMode, nAp: ctx.nAp, nSur: ctx.nSur,
+                         lambdas: ctx.lambdas, R: ctx.R, total: total });
+      for (var di = 0; di < nD; di++) {
+        var stats = [];
+        for (var fi = 0; fi < nF; fi++) {
+          for (var li = 0; li < nL; li++) {
+            OPT.spotTrace(ctx, di, fi, li);
+            self.postMessage({ type: 'progress', step: ++step, total: total, rays: ctx.nRays });
+          }
+          stats.push(OPT.spotStats(ctx, di, fi));
+        }
+        // 比例尺：离焦行整行共用（按该行最大光斑，格子之间大小可比）；
+        // 对焦行每格自己的——像差光斑大小差好几倍，共用的话轴上那格就是一个点
+        var rowHalf = 0;
+        for (fi = 0; fi < nF; fi++) rowHalf = Math.max(rowHalf, stats[fi].diam / 2000);
+        for (fi = 0; fi < nF; fi++) {
+          var half = Math.max((depths[di].role === 'focus' ? stats[fi].diam / 2000 : rowHalf) * 1.12, 0.004);
+          var buf = OPT.spotRaster(ctx, di, fi, half, m.px, m.colors, m.weights);
+          self.postMessage({ type: 'panel', di: di, fi: fi, half: half, stats: stats[fi], buf: buf,
+                             step: ++step, total: total, rays: ctx.nRays }, [buf.buffer]);
+          ctx.depths[di].fields[fi].grids = [];              // 铺完就释放
+        }
+      }
+      self.postMessage({ type: 'done', rays: ctx.nRays });
+    };
+  }
+  /* Worker 的源码：单文件版直接取内联 <script> 的文本；静态站用 fetch 把 js/ 里的文件读成文本。
+     不用 importScripts —— 它对 MIME 类型是严格的，Python 的 http.server 在 Windows 上把 .js
+     当 text/plain 发，Worker 就起不来（主页面的 <script src> 宽松，所以页面本身没事）。
+     读成文本再塞进 Blob，两种产物走同一条路，跟服务器怎么标 MIME 无关。取过一次就缓存。 */
+  var SPOTSRC = null;
+  function spotSource() {
+    if (SPOTSRC) return SPOTSRC;
+    SPOTSRC = Promise.all(['glassdb', 'optics'].map(function (k) {
+      var el = document.getElementById('src-' + k);
+      if (!el) return Promise.reject(new Error('页面里没有 src-' + k + ' 脚本（构建产物太旧）'));
+      var src = el.getAttribute('src');
+      if (!src) return Promise.resolve(el.textContent);
+      return fetch(new URL(src, location.href).href).then(function (r) {
+        if (!r.ok) throw new Error(src + ' ' + r.status);
+        return r.text();
+      });
+    })).then(function (parts) {
+      parts.push('(' + spotWorkerMain.toString() + ')();');
+      return parts.join('\n');
+    });
+    SPOTSRC.catch(function () { SPOTSRC = null; });     // 失败了下次重取
+    return SPOTSRC;
+  }
+  function spotFields(n) {
+    var st = last.st, lam = last.opt.lambdas[last.opt.primary].nm / 1000, out = [];
+    for (var i = 0; i < n; i++) {
+      var f = i / (n - 1);
+      out.push(st.fmode === 'height' ? OPT.angleForHeight(last.sys, st.fov * f, lam) : st.fov * f);
+    }
+    return out;
+  }
+  function spotStop(keepBadge) {
+    if (SPOT.worker) { SPOT.worker.terminate(); SPOT.worker = null; }
+    $('spotBtn').disabled = false; $('spotStop').disabled = true; $('spotProg').hidden = true;
+    if (!keepBadge) $('spotBadge').textContent = SPOT.hasImg ? '已停止 · 有格子没算完' : '已停止';
+  }
+  function spotStale() {
+    if (SPOT.hasImg && !SPOT.worker) $('spotBadge').textContent = '已过期 · 镜头参数已改';
+  }
+  function spotProgress(step, total, rays) {
+    var dt = (performance.now() - SPOT.t0) / 1000, pct = total ? 100 * step / total : 0;
+    $('spotProg').hidden = false;
+    $('spotProgBar').style.width = pct.toFixed(1) + '%';
+    $('spotProgTxt').textContent = Math.round(pct) + '% · 已追迹 ' + rays.toLocaleString('en-US') + ' 条 · ' + dt.toFixed(1) + ' s';
+  }
+  function spotRun() {
+    if (!last) return;
+    spotStop(true);
+    var st = last.st, nF = +$('spotNF').value, R = +$('spotN').value, px = +$('spotPx').value;
+    var um = parseFloat($('spotUm').value); if (!(um > 0)) um = 400;
+    var lamIdx = $('spotWl').value === 'pri' ? [last.opt.primary]
+      : last.opt.lambdas.map(function (_, i) { return i; });
+    SPOT.meta = { fields: spotFields(nF), lamIdx: lamIdx, px: px, um: um, R: R,
+                  colors: lamIdx.map(function (i) { return hex2rgb(st.wl[i].c || '#ffffff').map(function (v) { return v / 255; }); }),
+                  weights: lamIdx.map(function (i) { return last.opt.lambdas[i].w > 0 ? last.opt.lambdas[i].w : 1; }) };
+    SPOT.prep = null; SPOT.hasImg = false; SPOT.t0 = performance.now();
+    $('spotBadge').textContent = '搜索焦前 / 焦后物距…'; $('spotBtn').disabled = true; $('spotStop').disabled = false;
+    $('spotLegend').innerHTML = '';
+    $('spotProg').hidden = false; $('spotProgBar').style.width = '0%'; $('spotProgTxt').textContent = '搜索焦前 / 焦后物距…';
+    var run = ++SPOT.seq;
+    var msg = { cmd: 'run', tx: st.tx, opt: last.opt, vig: last.sys.vig || null, targetUm: um, fields: SPOT.meta.fields,
+                lamIdx: lamIdx, R: R, px: px, colors: SPOT.meta.colors, weights: SPOT.meta.weights };
+    spotSource().then(function (src) {
+      if (run !== SPOT.seq) return;                    // 等源码期间又按了一次
+      var w = new Worker(URL.createObjectURL(new Blob([src], { type: 'text/javascript' })));
+      w.onerror = function (ev) { $('spotBadge').textContent = '计算出错：' + (ev.message || ev); spotStop(true); };
+      w.onmessage = spotOnMsg;
+      SPOT.worker = w;
+      w.postMessage(msg);
+    }, function (err) { $('spotBadge').textContent = '无法启动 Worker：' + err.message; spotStop(true); });
+  }
+  function spotOnMsg(e) {
+    var m = e.data;
+    if (m.type === 'prep') { SPOT.prep = m; spotBuildGrid(); spotProgress(0, m.total, 0); $('spotBadge').textContent = '追迹中…'; return; }
+    if (m.type === 'progress') { spotProgress(m.step, m.total, m.rays); return; }
+    if (m.type === 'panel') {
+      var nF = SPOT.meta.fields.length;
+      spotPanel($('spotC' + m.di + '_' + m.fi), m.buf, m.stats, m.half, m.fi / (nF - 1));
+      SPOT.hasImg = true;
+      spotProgress(m.step, m.total, m.rays);
+      return;
+    }
+    if (m.type === 'done') {
+      var dt = (performance.now() - SPOT.t0) / 1000;
+      $('spotBadge').textContent = m.rays.toLocaleString('en-US') + ' 条 · ' + dt.toFixed(1) + ' s';
+      spotStop(true);
+    }
+  }
+  function spotRoleName(r) { return r === 'focus' ? '对焦' : r === 'back' ? '焦后' : '焦前'; }
+  function spotBuildGrid() {
+    var P = SPOT.prep, M = SPOT.meta, g = $('spotGrid'), nF = M.fields.length;
+    $('spotEmpty').hidden = true;
+    g.style.gridTemplateColumns = 'max-content repeat(' + nF + ', ' + M.px + 'px)';
+    var html = '';
+    P.depths.forEach(function (d, di) {
+      var um = d.role === 'focus' ? P.dd.focusUm : d.role === 'back' ? P.dd.backUm : P.dd.frontUm;
+      html += '<div class="spotlbl"><b>' + spotRoleName(d.role) + '</b><i>' + (isFinite(d.D) ? Math.round(d.D).toLocaleString('en-US') + ' mm' : '∞') + '</i><span>轴上 ' + Math.round(um) + ' µm</span></div>';
+      for (var fi = 0; fi < nF; fi++)
+        html += '<div class="spotcell"><canvas id="spotC' + di + '_' + fi + '" width="' + M.px + '" height="' + M.px + '"></canvas></div>';
+    });
+    g.innerHTML = html;
+    var vig = P.vigMode === 'aperture'
+      ? '瞳：' + P.nAp + '/' + P.nSur + ' 个面按真实通光逐面裁剪（猫眼为真）'
+      : '瞳：没有足够的写死通光，按渐晕系数取等效椭圆瞳（光斑只能是椭圆）';
+    var lam = P.lambdas.map(function (nm, i) {
+      var c = M.colors[i].map(function (v) { return Math.round(v * 255); });
+      return '<span><i style="display:inline-block;width:9px;height:9px;border-radius:2px;background:rgb(' + c.join(',') + ');vertical-align:-1px;margin-right:4px"></i>' + nm + ' nm</span>';
+    }).join('');
+    var reach = [];
+    if (P.dd.backReached === false) reach.push('焦后到无限远也只有 ' + Math.round(P.dd.backUm) + ' µm');
+    if (P.dd.frontReached === false) reach.push('焦前到最近可算物距也只有 ' + Math.round(P.dd.frontUm) + ' µm');
+    $('spotLegend').innerHTML = '<span>' + vig + '</span><span>每格每波长 ' + P.R.toLocaleString('en-US') + ' 条 · 目标光斑 ' + M.um + ' µm（轴上外径）</span>' + lam
+      + '<span>离焦行整行同一比例尺，对焦行每格自己的（右下角 ±）</span>'
+      + (reach.length ? '<span style="color:var(--warn)">' + reach.join('；') + '</span>' : '');
+  }
+  /* 一格：辐照度图 → 能量分位色调映射 → 写字 */
+  function spotPanel(cv, acc, st, half, frac) {
+    var W = cv.width, ctx = cv.getContext('2d'), n = W * W;
+    // 点列图的亮度：按非零像素亮度的 99 分位归一，再开 0.6 次方——单个落点也看得见，密处到白。
+    var lum = [], i;
+    for (i = 0; i < n; i++) { var v = (acc[i * 3] + acc[i * 3 + 1] + acc[i * 3 + 2]) / 3; if (v > 0) lum.push(v); }
+    lum.sort(function (p, q) { return p - q; });
+    var iq = lum.length ? Math.max(lum[Math.min(lum.length - 1, Math.floor(lum.length * 0.99))], 1e-30) : 1;
+    var img = ctx.createImageData(W, W), D = img.data;
+    for (i = 0; i < n; i++) {
+      for (var ch = 0; ch < 3; ch++) {
+        var q = acc[i * 3 + ch] / iq;
+        D[i * 4 + ch] = Math.round(255 * Math.min(1, Math.pow(Math.max(0, q), 0.6)));
+      }
+      D[i * 4 + 3] = 255;
+    }
+    ctx.putImageData(img, 0, 0);
+    var fs = Math.round(W / 24);
+    ctx.font = fs + 'px "IBM Plex Mono", monospace'; ctx.fillStyle = 'rgba(255,255,255,.85)'; ctx.textBaseline = 'top';
+    ctx.fillText('F=' + frac.toFixed(1) + ' (' + st.th.toFixed(2) + '°)', fs * 0.6, fs * 0.5);
+    ctx.textBaseline = 'bottom';
+    ctx.fillText('D' + st.diam.toFixed(0) + 'µm  rms ' + st.rms.toFixed(0) + '  T ' + st.T.toFixed(2), fs * 0.6, W - fs * 0.5);
+    ctx.textAlign = 'right';
+    ctx.fillText('±' + (half * 1000).toFixed(0) + 'µm', W - fs * 0.6, W - fs * 0.5);
+    ctx.textAlign = 'left';
+  }
+  $('spotBtn').addEventListener('click', spotRun);
+  $('spotStop').addEventListener('click', function () { spotStop(false); });
 
   /* ================= 卡片说明（表头的 ?，默认收起） =================
      长说明不该常年占着版面，但也不该藏到「关于」里去——放在本卡片表头一个
