@@ -242,6 +242,7 @@ table.data tbody tr:hover{background:var(--panel-2)}
 .status .it.key i{color:var(--accent)}
 .status .grow{flex:1 1 auto;border:0}
 .status .it.perf{border-right:0;border-left:1px solid var(--line-2);color:var(--ink-2)}
+.status .it.visits{border-right:0;border-left:1px solid var(--line-2);color:var(--ink-2)}   /* 只在网页版出现 */
 
 @media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
 </style>
@@ -589,6 +590,7 @@ table.data tbody tr:hover{background:var(--panel-2)}
       <span class="it"><b>轴上 RMS</b><i id="stRms">—</i></span>
       <span class="grow"></span>
       <span class="it perf" id="stPerf">—</span>
+      <span class="it visits" title="本站累计访问量 / 独立访客，由 vercount 统计"><b>访问</b><i id="vercount_value_site_pv">—</i><b style="margin-left:10px">访客</b><i id="vercount_value_site_uv">—</i></span>
     </div>
   </div>
 </div>
@@ -598,4 +600,5 @@ table.data tbody tr:hover{background:var(--panel-2)}
 <script src="js/lensio.js"></script>
 <script src="js/optics.js"></script>
 <script src="js/app.js"></script>
+<script defer src="https://events.vercount.one/js"></script>
 </body></html>
