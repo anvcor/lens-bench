@@ -1579,7 +1579,8 @@
   function spotBuildGrid() {
     var P = SPOT.prep, M = SPOT.meta, g = $('spotGrid'), nF = M.fields.length;
     $('spotEmpty').hidden = true;
-    g.style.gridTemplateColumns = 'max-content repeat(' + nF + ', ' + M.px + 'px)';
+    // 列宽等分卡片宽度（画布 CSS 缩放），不再按渲染像素排版，免掉横向滚动条
+    g.style.gridTemplateColumns = 'max-content repeat(' + nF + ', minmax(0, 1fr))';
     var html = '';
     P.depths.forEach(function (d, di) {
       var um = d.role === 'focus' ? P.dd.focusUm : d.role === 'back' ? P.dd.backUm : P.dd.frontUm;

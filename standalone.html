@@ -71,6 +71,7 @@ body{
   background:var(--panel);border:1px solid var(--line);border-radius:var(--r);box-shadow:var(--shadow)}
 .fld{display:flex;flex-direction:column;gap:3px}
 .fld > span{font-size:9.5px;letter-spacing:.06em;text-transform:uppercase;color:var(--ink-3);white-space:nowrap}
+.fld > span i{font-style:normal;text-transform:none}   /* 单位（µm 会被 uppercase 变成希腊 Μ）*/
 .fld input,.fld select{padding:4px 7px;font-size:12.5px;height:28px;
   font-family:"IBM Plex Mono",monospace;font-variant-numeric:tabular-nums}
 .fld.chk{justify-content:flex-end}
@@ -237,12 +238,12 @@ table.data tbody tr:hover{background:var(--panel-2)}
 .btn.primary{background:var(--accent);border-color:var(--accent);color:var(--panel);font-weight:600}
 .btn.primary:disabled{opacity:.5;cursor:default}
 .spotwrap{overflow-x:auto;padding:10px 11px 6px}
-.spotgrid{display:grid;gap:3px;width:max-content}
+.spotgrid{display:grid;gap:3px;width:100%}
 .spotlbl{display:flex;flex-direction:column;justify-content:center;gap:3px;padding:0 10px 0 2px;font-size:10.5px;color:var(--ink-3);white-space:nowrap}
 .spotlbl b{font-size:12px;color:var(--ink);font-weight:600}
 .spotlbl i{font-style:normal;font-family:"IBM Plex Mono",monospace;color:var(--ink-2)}
 .spotcell{background:#000;border-radius:4px;overflow:hidden;line-height:0}
-.spotcell canvas{display:block}
+.spotcell canvas{display:block;width:100%;height:auto}
 .spotempty{padding:22px 11px;font-size:12px;color:var(--ink-3)}
 .spotprog{position:relative;height:18px;border-radius:4px;background:var(--panel-3);overflow:hidden}
 .spotprog[hidden]{display:none}
@@ -451,11 +452,11 @@ table.data tbody tr:hover{background:var(--panel-2)}
     <header><h2>Spot · 虚化光斑</h2><span class="grow"></span><span class="badge" id="spotBadge">未计算</span><button class="helpbtn" type="button" data-help="spotHelp" aria-controls="spotHelp" aria-expanded="false" aria-label="使用说明">?</button></header>
     <div class="ldmbar">
       <div class="ldmrow">
-        <label class="fld"><span>目标光斑 µm</span><input id="spotUm" type="number" step="50" min="20" value="400"></label>
+        <label class="fld"><span>目标光斑 <i>µm</i></span><input id="spotUm" type="number" step="50" min="20" value="600"></label>
         <label class="fld"><span>视场点数</span><select id="spotNF"><option value="4">4</option><option value="6" selected>6</option><option value="8">8</option></select></label>
-        <label class="fld"><span>每格每波长光线</span><select id="spotN"><option value="20000">2 万</option><option value="50000">5 万</option><option value="100000" selected>10 万</option><option value="300000">30 万</option></select></label>
+        <label class="fld"><span>每格每波长光线</span><select id="spotN"><option value="20000">2 万</option><option value="50000" selected>5 万</option><option value="100000">10 万</option><option value="300000">30 万</option></select></label>
         <label class="fld"><span>波长</span><select id="spotWl"><option value="all" selected>全部</option><option value="pri">只主波长</option></select></label>
-        <label class="fld"><span>每格像素</span><select id="spotPx"><option value="320">320</option><option value="400" selected>400</option><option value="500">500</option></select></label>
+        <label class="fld"><span>每格渲染像素</span><select id="spotPx"><option value="320">320</option><option value="400" selected>400</option><option value="500">500</option></select></label>
         <span class="grow"></span>
         <button class="btn primary" id="spotBtn" type="button">生成 Spot</button>
         <button class="btn" id="spotStop" type="button" disabled>停止</button>
@@ -465,11 +466,11 @@ table.data tbody tr:hover{background:var(--panel-2)}
     <div class="spotwrap"><div class="spotempty" id="spotEmpty">按「生成 Spot」开始：镜头与像面不动，只把物点移到对焦距离和焦后 / 焦前两个物距上，出各视场的光斑。一次几十万条光线，不跟着编辑自动重算。</div><div class="spotgrid" id="spotGrid"></div></div>
     <div class="legend" id="spotLegend"></div>
     <div class="helpwrap" id="spotHelp" hidden>
-      <p class="note"><b>算的是什么</b>：几何点列图。镜头结构、光圈、像面位置都按当前状态不动，物点放在三个物距上——对焦物距（当前「物距」，无限远也可以），以及自动搜出来的<b>焦后</b>（更远）和<b>焦前</b>（更近）两个物距：搜索条件是<b>轴上离焦光斑外径 = 目标光斑</b>（默认 400 µm），在 1/物距 上两轮网格 + 插值。无限远对焦只有焦前。每一行共用同一组物方视场角（按当前视场定义等分，视场角在对焦物距上换算）。</p>
+      <p class="note"><b>算的是什么</b>：几何点列图。镜头结构、光圈、像面位置都按当前状态不动，物点放在三个物距上——对焦物距（当前「物距」，无限远也可以），以及自动搜出来的<b>焦后</b>（更远）和<b>焦前</b>（更近）两个物距：搜索条件是<b>轴上离焦光斑外径 = 目标光斑</b>（默认 600 µm），在 1/物距 上两轮网格 + 插值。无限远对焦只有焦前。每一行共用同一组物方视场角（按当前视场定义等分，视场角在对焦物距上换算）。</p>
       <p class="note"><b>光斑形状从哪来</b>：瞳面在光阑上分层随机采样，每条光线瞄准光阑；谁把光线挡掉决定了形状。镜头有足够多写死的真实通光（CIR / 固定 DIAM / FLAP，门槛和「一键渐晕」一样：≥4 个面且 ≥20%）就<b>逐面裁剪，猫眼是真的</b>；不够就退回渐晕系数给的等效椭圆瞳，光斑只能是椭圆——用的是哪种写在图下面。400 µm 量级的离焦盘上衍射没有意义，不算。</p>
       <p class="note"><b>读数</b>：D = 全部波长落点离主光线的最大距离 ×2；rms = 主波长落点对自身质心的 RMS；T = 主波长通过率（瞳面均匀采样里通过的比例）。每一行按该行最大光斑取同一比例尺，所以同一行里格子之间的大小可以直接比。亮度映射：能量占 90% 的阈值映到中灰，再往上柔和压到白，离焦盘的亮环和对焦光斑的核心都看得见。</p>
       <p class="note"><b>怎么画的</b>：普通点列图。瞳面分层随机取点，每条光线追到像面点亮一个像素，各波长按颜色叠加，密处到白。颜色按「无渐晕的均匀盘应当是白的」做了白平衡，色边才是真的色差而不是权重偏色。不做衍射。</p>
-      <p class="note"><b>性能</b>：计算在 Web Worker 里，界面不冻，逐格出图并有进度条。默认每格每波长 10 万条，5 波长 × 6 视场 × 3 行 = 900 万条，约 30 s；「30 万」约 3 倍。和 MTF 用同一套追迹内核，参数改了之后这张图不会自动重算，右上角会标「已过期」。</p>
+      <p class="note"><b>性能</b>：计算在 Web Worker 里，界面不冻，逐格出图并有进度条。默认每格每波长 5 万条，5 波长 × 6 视场 × 3 行 = 450 万条，约 15～20 s；「30 万」是它的 6 倍。格子的<b>显示宽度按卡片宽度自动均分</b>，不用横向拉；「每格渲染像素」只决定画布本身的分辨率（画得多细），和显示大小无关。和 MTF 用同一套追迹内核，参数改了之后这张图不会自动重算，右上角会标「已过期」。</p>
     </div>
   </section>
 
@@ -7947,7 +7948,8 @@ if (typeof module !== 'undefined') module.exports = OPT;
   function spotBuildGrid() {
     var P = SPOT.prep, M = SPOT.meta, g = $('spotGrid'), nF = M.fields.length;
     $('spotEmpty').hidden = true;
-    g.style.gridTemplateColumns = 'max-content repeat(' + nF + ', ' + M.px + 'px)';
+    // 列宽等分卡片宽度（画布 CSS 缩放），不再按渲染像素排版，免掉横向滚动条
+    g.style.gridTemplateColumns = 'max-content repeat(' + nF + ', minmax(0, 1fr))';
     var html = '';
     P.depths.forEach(function (d, di) {
       var um = d.role === 'focus' ? P.dd.focusUm : d.role === 'back' ? P.dd.backUm : P.dd.frontUm;
