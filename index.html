@@ -190,6 +190,16 @@ table.wl td.num{cursor:default}
 .viewcol > *{flex:0 0 auto}   /* 不允许被压扁 */
 .plotwrap{width:100%;overflow-x:auto}
 svg.plot{display:block;width:100%;height:auto}
+/* Layout 缩放：滚轮 / 拖动 / 双击复位 */
+#layout{touch-action:none;user-select:none}
+#layout.zoomed{cursor:grab}#layout.dragging{cursor:grabbing}
+.hdrbtns{display:inline-flex;align-items:center;gap:4px;margin-right:6px}
+.hbtn{height:22px;padding:0 8px;border:1px solid var(--line);border-radius:5px;background:var(--panel);
+  color:var(--ink-2);font:inherit;font-size:11px;line-height:20px;cursor:pointer;white-space:nowrap}
+.hbtn:hover{border-color:var(--accent);color:var(--accent)}
+.hbtn:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+.hbtn.ok{border-color:var(--accent);color:var(--accent);background:var(--accent-soft)}
+.hzoom{font-family:"IBM Plex Mono",monospace;font-variant-numeric:tabular-nums;font-size:10.5px;color:var(--ink-3);min-width:40px;text-align:center}
 @media(max-width:760px){svg.plot#mtf{min-width:560px}svg.plot#layout{min-width:480px}}
 .legend{display:flex;flex-wrap:wrap;gap:5px 14px;align-items:center;padding:0 11px 10px;font-size:11px;color:var(--ink-2)}
 .lg{display:inline-flex;align-items:center;gap:6px}
@@ -364,12 +374,14 @@ table.data tbody tr:hover{background:var(--panel-2)}
       <div id="msgs"></div>
       <div class="helpwrap" id="ldmHelp" hidden>
         <p class="note"><b>编辑</b>：直接改单元格；点「表面编号」格可把该面设为光阑。</p>
+        <p class="note"><b>物面与最佳对焦</b>：物面那一行的厚度就是<b>物距</b>，和顶栏「物距」是同一个量，改哪边都行，写 inf 为无限远；有多重结构时会写回当前结构。改完按<b>最佳对焦</b>：镜头有多个对焦结构时，按<b>镜头自己的对焦群</b>重新对焦——同一焦段、不同物距的几个结构相差的那几个间隔就是对焦群（浮动对焦的几组也一起认出来），把它们按 1/物距 插值成一条对焦凸轮，沿凸轮找<b>轴上 RMS 最小</b>的位置写回表里，<b>像面不动</b>，总长守恒。变焦镜头只用当前焦段的那几个结构，不会把变焦混进来。认不出对焦群（单结构、同物距几组不同间隔、对焦时曲率也在变、插删过面）时退回老办法：移动像面，写进「离焦」。物距超出文件给的对焦行程会提示是外推。</p>
+        <p class="note"><b>半孔径</b>：格子里有数（CODE V 的 CIR 或手填）是<b>硬光阑</b>，追迹时光线超出即被挡。没数的面用<b>灰字</b>显示参考值，不挡光，鼠标停上去看来源：文件里写死的通光（Zemax 固定 DIAM / FLAP，「一键渐晕」和 Spot 按它逐面裁剪）→ 文件的半口径（Zemax 自动 DIAM，只用于画图）→ 本页按光线包络算的画图半径。在灰字格里填数就变成硬光阑。</p>
         <p class="note"><b>多重结构</b>：.seq 里的 <code>ZOO</code> 记录（结构数、各结构标题、逐结构的 FNO / 面厚度 / 曲率 / 渐晕系数）会读进来，用工具栏「结构」下拉切换，<b>随结构变化的格子在表里标了色</b>，改这些格子会写回当前结构。物面厚度（<code>ZOO THI S0</code>）落到顶栏「物距」，因此近摄结构按<b>有限共轭</b>追迹：光线从物点发出而非平行入射，F/# 用像方工作 F/#（由近轴边缘光线角 1/(2|u′|) 反解入瞳），状态栏 RED 给出放大倍率。</p>
         <p class="note"><b>光线瞄准默认开着</b>：归一化瞳坐标只有定义在<b>光阑面</b>上才有意义。关掉的话它落在近轴入瞳上，视场一大瞳像差就把这个参数化整个扭掉——FE 14mm F1.8 GM 的 56.7° 视场上，u = −1…+1 只覆盖光阑的 +0.13…+0.84，主光线（u=0）落在 0.47 处，整束光线跑到光阑上半边，下缘瞳位置和边角 MTF 全错；FE 35mm F1.4 GM 的 32.4° 则是 u = −1 落到光阑外 1.20 倍处。规规矩矩的镜头开不开几乎没差（85 GM II / 55ZA / CODE V 对照实测 MTF 差 ≤ 0.005），代价是追迹慢一些。</p>
         <p class="note"><b>渐晕</b>：若文件带 <code>SETVIG</code> / <code>VDYN·VCYN</code> 存的 VUY/VLY/VUX/VLX，瞳区间直接按它逐视场插值取，不再靠通光孔径反推——很多 .seq 只在像面写 CIR，镜片没有孔径数据，这时这张表是唯一依据。</p>
         <p class="note"><b>一键渐晕</b>：文件存的系数常常和它自己的通光对不上（Zemax 的浮动通光逐结构重算，系数却只存了一份），画出来就是光线穿出镜片。按 CODE V 的 <code>SET VIGNETTING</code> 重算<b>当前结构</b>的渐晕系数——把 ±Y / ±X 四条边缘光线二分推到「刚好通过全部真实通光」为止，21 个视场点，能收紧也能放开。判据只认<b>写死的</b>通光（CODE V 的 CIR、Zemax 的固定 DIAM 与浮动通光 FLAP）；自动算出来的 DIAM 是光线包络反推的，不是物理孔径，不参与；<b>光阑面也不参与</b>——归一化瞳坐标 ±1 定义的就是它的边缘，它不会渐晕自己。<b>弧矢跨度在子午瞳的中心那一行量</b>，不是在 y = 0 上量：渐晕后的瞳是偏心的（FE 85mm F1.4 GM II 最大视场瞳心在 −0.32），在 y = 0 上量等于量到瞳边缘的一条弦，弧矢瞳会小掉一大截（0.52 而不是 0.86），MTF 反而虚高。Zemax 的 VDX/VCX 也是这个意思——X 边缘光线走的是 Py′ = VDY 那一行。<b>库里的镜头已经逐结构预先跑过一遍</b>（<code>tools/setvig.js</code>），载入即生效，按钮显示为「渐晕：按通光」；再按一下即换回文件自带的系数，可以直接看出偏了多少，Ctrl+Z 也能来回。没有渐晕系数的镜头（瞳本来就按通光实时追迹）不预算；另外几种情况也<b>有意跳过</b>并在提示里说明原因：<b>写死通光的面数达不到下限</b>（至少 4 个面、且至少占总面数的 20%；拿 3 个面去解 21 个视场的渐晕剖面，解出来的瞳只是这 3 个面的形状，和真实镜筒无关）、真实通光太少（定不出渐晕剖面）、<b>通光够多但全程只有一个面在限制光瞳</b>（真正卡光的面没写进文件，放开只会把瞳算得比实际大），以及<b>写死的通光其实挡不住任何光线</b>——按文件自带的渐晕系数追一遍包络，如果每个通光都 ≥ 自己的包络，说明它们只是被 Zemax 的 Set Semi-Diameters 冻结下来的自动半口径，不含新信息（FE 16mm F1.8 G 的 S16 写死 8.80，而文件渐晕追出来的包络正好是 8.8025）。这几种都保留文件自带的系数，按钮仍可手动按。拿带 SETVIG 的 CODE V 文件反过来校验，本页重算的系数与文件自带的差 ≤ 0.03（归一化瞳坐标，满瞳半宽 = 1）。</p>
-        <p class="note"><b>撤销</b>：所有改动（含「最佳对焦」写入的离焦量、插删面、波长预设、粘贴）都可 <b>撤销 / 重做</b>，快捷键 Ctrl+Z / Ctrl+Shift+Z（光标停在输入框里时让给浏览器的文本撤销）；<b>恢复初始</b>回到刚载入示例或刚导入 .seq 时的状态，这一步本身也能撤销。</p>
-        <p class="note"><b>粘贴</b>：从 Excel / 专利表格复制多行多列，选中起始格 Ctrl+V 即整块填入（列顺序 Y 半径→厚度→玻璃→半孔径→圆锥→A4 A6 A8…），行数不够会自动补。</p>
+        <p class="note"><b>撤销</b>：所有改动（含「最佳对焦」写入的对焦群间隔或离焦量、改物距、插删面、波长预设、粘贴）都可 <b>撤销 / 重做</b>，快捷键 Ctrl+Z / Ctrl+Shift+Z（光标停在输入框里时让给浏览器的文本撤销）；<b>恢复初始</b>回到刚载入示例或刚导入 .seq 时的状态，这一步本身也能撤销。</p>
+        <p class="note"><b>粘贴</b>：从 Excel / 专利表格复制多行多列，选中起始格 Ctrl+V 即整块填入（列顺序 Radius→厚度→玻璃→半孔径→圆锥→A4 A6 A8…），行数不够会自动补。</p>
         <p class="note"><b>非球面</b>：A4 A6 A8… 每项一列，列不够时最右会自动多出一列；表格可左右滚动。<b>奇次非球面</b>把第一格写成 <b>ODD</b>，后面各列就依次是 r¹ r² r³ … 的系数（r 的任意整数次幂，对应 Zemax 的 <b>XOSPHERE</b>、专利里印成 A3…A10 那种）；不写 ODD 就是默认的偶次 r⁴ r⁶ r⁸…，两种写法互斥、整行二选一。</p>
         <p class="note"><b>材料</b>：直接写牌号，内置 <b id="glassN">—</b> 种厂商目录玻璃（SCHOTT / OHARA / HOYA / HIKARI / CDGM / SUMITA / NHG / CHINA / SPECIAL 等 19 家），输入时会自动补全；重名可用 <b>牌号_目录</b> 指定（<b>H-ZF72A_CDGM</b>、<b>NBFD25_HOYA</b>、<b>SBSL7_OHARA</b>）。查不到的写 <b>nd/vd</b>（如 <b>1.7292/54.7</b>）或 6 位 <b>MIL 代码</b>（如 <b>517640</b>）按模型玻璃算；写 <b>nd/vd/ΔPg,F</b> 三段可指定反常色散。<b>玻璃偏移解</b>写成 <b>牌号~Δnd~Δνd</b>（如 <b>S-NBH52V~-0.00735~-2.6561</b>）：照搬基准玻璃的色散曲线形状、只把 n<sub>d</sub> 和 ν<sub>d</sub> 挪到偏移后的值，相对部分色散不变，对应 Zemax 的 <code>GLAS … 4 … Δnd Δνd</code>，专利仿真里用来还原没有等效牌号的元件。留空为空气。CODE V 的<b>数字式虚拟玻璃</b> <b>nnnnnn.vvvvvv</b>（如 <b>560412.639175</b> → n<sub>d</sub> 1.560412 / ν<sub>d</sub> 63.9175，整数部分 =(n<sub>d</sub>−1)×10⁶、小数部分 = ν<sub>d</sub>/100）也认，常见于複合型非球面的树脂层；认不出来整个面会被当成空气，所以宁可解错也要解。<b>但这只是兜底，解出的 ν<sub>d</sub> 已知不可信</b>——同一片树脂，原始文件写的是 1.56093 / 36.6，CODE V 重导出后按上式解出来是 63.9175。每遇到一个都会把面号和解出的值列进导入提示；<b>出现这种写法基本说明该文件是 CODE V 往返导出的产物</b>，建议回去用原始文件。</p>
         <p class="note"><b>导入</b>：<b>CODE V .seq</b> 读面数据 / CIR 通光 / ASP 非球面 / STO / FNO / WL·WTW·REF / YRI·YAN / SETVIG 渐晕 / ZOO 多重结构 / 数字式虚拟玻璃；<b>Zemax .zmx</b>（UTF-16 或 UTF-8）读 SURF·CURV·DISZ·GLAS·CONI·PARM / STOP / FNUM·ENPD / FTYP·YFLN / WAVM·PWAV / VDYN·VCYN 渐晕 / MNUM·THIC·APER·FVCY 多重结构。两种格式走的是同一份解析代码，命令行批量转换用的也是它。</p>
@@ -415,7 +427,7 @@ table.data tbody tr:hover{background:var(--panel-2)}
     <!-- ---- 右：Layout + MTF ---- -->
     <div class="viewcol">
       <section class="card">
-        <header><h2>2D Layout</h2><span class="grow"></span><span class="badge" id="layoutBadge">—</span></header>
+        <header><h2>2D Layout</h2><span class="grow"></span><span class="hdrbtns"><button class="hbtn" id="layZoomOut" type="button" title="缩小（滚轮也可以）">−</button><span class="hzoom" id="layZoomLbl" title="当前缩放；拖动平移，双击复位">1.0×</span><button class="hbtn" id="layZoomIn" type="button" title="放大（滚轮也可以）">+</button><button class="hbtn" id="layZoomReset" type="button" title="复位到整图（双击图也可以）">复位</button><button class="hbtn" id="layCopy" type="button" title="把当前视图（含缩放）渲染成 PNG 复制到剪贴板；剪贴板不可用时改为下载">复制图片</button></span><span class="badge" id="layoutBadge">—</span></header>
         <div class="plotwrap"><svg class="plot" id="layout" role="img" aria-label="镜头二维结构图与光线追迹"></svg></div>
         <div class="legend" id="layoutLegend"></div>
       </section>
@@ -579,7 +591,7 @@ table.data tbody tr:hover{background:var(--panel-2)}
     <div class="sheetbody">
 <section><h3>算的是什么</h3><p>序列面实光线追迹（球面 / 二次曲面 / 偶次非球面）；玻璃取自<b>内置的 19 家厂商目录（3074 种牌号）</b>，按各自目录公式求折射率（Laurent 幂级数 / 厂商 Sellmeier / 标准 Sellmeier / Herzberger）；查不到的牌号可写 <code>nd/vd</code> 或 6 位 MIL 代码，按 Conrady 模型玻璃处理；入瞳位置由近轴矩阵求解；</p></section>
 
-<section><h3>Layout · 光阑 · 光线瞄准</h3><p><b>每视场 3 条光线</b>：上下两条取该视场未渐晕瞳区间的边缘，中间那条<b>牛顿迭代瞄到光阑面 (0,0)</b>，即真正的主光线——在入瞳里取 u=0 只有瞳像差为零时才等价，A2028 这种广角反远距在 35° 上会偏到光阑面下方 0.38 mm。<b>光阑符号</b>画在真实光阑半径处：面上写了 CIR 用 CIR，没写就用轴上满孔径光线在光阑面的实际落点（该 F/# 下真正起限制作用的半径；近轴值 EPD/2·|pupilMag| 只作兜底）。因此「光线瞄准」现在不再要求光阑面有 CIR。开启后每条光线牛顿迭代精确瞄到光阑面（同 Zemax Ray Aiming）；渐晕由各面 Y 半孔径决定。</p></section>
+<section><h3>Layout · 光阑 · 光线瞄准</h3><p><b>每视场 3 条光线</b>：上下两条取该视场未渐晕瞳区间的边缘，中间那条<b>牛顿迭代瞄到光阑面 (0,0)</b>，即真正的主光线——在入瞳里取 u=0 只有瞳像差为零时才等价，A2028 这种广角反远距在 35° 上会偏到光阑面下方 0.38 mm。<b>光阑符号</b>画在真实光阑半径处：面上写了 CIR 用 CIR，没写就用轴上满孔径光线在光阑面的实际落点（该 F/# 下真正起限制作用的半径；近轴值 EPD/2·|pupilMag| 只作兜底）。因此「光线瞄准」现在不再要求光阑面有 CIR。开启后每条光线牛顿迭代精确瞄到光阑面（同 Zemax Ray Aiming）；渐晕由各面半孔径决定。</p></section>
 
 <section><h3>MTF</h3><p>对齐 CODE V 的 <code>MTFVSFLD</code> 宏：该宏先跑 <code>setvig</code> 求渐晕因子，再调 <code>mtf</code> 命令，取的是<b>衍射 MTF</b>。<br>
           <b>衍射模式</b>（默认）：按渐晕因子把通光瞳建模成缩放+偏心的等效椭圆瞳，瞳内均匀取样、由实光线光程算波前 OPD，OTF = 圆孔径解析面积因子 × 波前相位平均 ⟨e<sup>iΔφ</sup>⟩，多波长按通量加权合成复数 OTF。<b>截止频率按「像空间方向余弦」上的瞳半宽定</b>，不是拿 F/# ÷ 归一化瞳半宽：归一化瞳坐标到方向余弦的映射在离轴上被大幅压缩，视场越大压得越狠——实测最大视场的压缩比与归一化半宽之比，135mm 是 ×0.95、85mm ×0.86、35mm ×0.53、16mm ×0.46。照归一化半宽定截止频率，等于把瞳当成没被压缩过，剪切量偏小、边缘视场 MTF 系统性虚高（FE 16mm F1.8 G 角落 80 cyc/mm 会报 0.58，独立的严格二维积分是 0.32，Zemax 也是 0.32）。现在逐波长在瞳缘追 16 条探针光线量出真实的方向余弦瞳半宽，ν<sub>c</sub> = 2 × 半宽，轴上退化成原来的 F/#（读数变化 ≤ 0.001）。剪切取样在瞳缘用「按可用角点归一化的双线性」（不再退回最近邻——最近邻会把最多半格的坐标误差当成波前差，在 PV 大的视场上折算成几个弧度的相位噪声，与 32² 网格收敛值的最大偏差因此从 0.030 降到 0.011）。<br>
@@ -599,7 +611,7 @@ table.data tbody tr:hover{background:var(--panel-2)}
 
 <section><h3>多重结构 · 有限物距 · 渐晕</h3><p>.seq 的 <code>ZOO</code> 记录和 .zmx 的 <code>MNUM / THIC / APER / FVCY</code> 都会读进来——结构数、各结构标题、逐结构的 F/# 与面厚度 / 曲率 / 渐晕系数，用工具栏「结构」下拉切换，随结构变化的格子在表里标了色，改这些格子会写回当前结构。物面厚度落到顶栏「物距」，近摄结构按<b>有限共轭</b>追迹：光线从物点发出而非平行入射，F/# 用像方工作 F/#（由近轴边缘光线角 1/(2|u′|) 反解入瞳），状态栏 RED 给放大倍率。70 mm 微距的 1.0X 结构实测放大率 −0.9975，SIGMA 35 的 MFD 结构 −0.2004。<br><b>渐晕</b>：文件里若存了 CODE V 的 <code>SETVIG</code> 系数或 Zemax 的 <code>VDY/VCY</code>，瞳区间直接按它逐视场插值取，不再靠通光孔径反推——很多文件只在像面写 CIR，镜片没有孔径数据，这时这张表是唯一依据。两家的约定不同，统一换算成 CODE V 那套：<code>VUY = VCY − VDY</code>、<code>VLY = VCY + VDY</code>。<br><b>这套系数写在哪套坐标上，取决于文件里的光线瞄准开关</b>（.zmx 的 <code>RAIM</code>）：关瞄准时归一化瞳坐标落在<b>近轴入瞳</b>上，开了才落在<b>光阑面</b>上，而本页一律按光阑坐标算。大视场上两者差很远——FE 16mm F1.8 G 最大视场文件写的 [−0.577, 0.913] 换到光阑上其实是 [−0.510, 0.236]，上缘差 0.68，直接混用会把边角 MTF 整个算错。导入时按文件的 RAIM 判断，关瞄准的文件由 <code>tools/setvig.js</code> 逐视场实光线追迹换算，并在提示里写明换算前后的瞳区间。</p></section>
 
-<section><h3>镜头文件导入</h3><p><b>CODE V .seq</b> 读面数据 / CIR 通光 / ASP 非球面 / STO / FNO / WL·WTW·REF / YRI·YAN / SETVIG / ZOO。<b>Zemax .zmx</b>（UTF-16 或 UTF-8 自动识别）读 SURF·CURV·DISZ·GLAS·CONI·PARM / <code>XDAT</code>（扩展非球面 <code>XASPHERE</code> 能到 r¹⁸ / r²⁰，扩展奇次非球面 <code>XOSPHERE</code> 带 r 的奇数次项，系数都按归一化半径换算回 r 的实际幂次） / STOP / FNUM·ENPD / FTYP·YFLN / WAVM·PWAV / VDYN·VCYN / <code>RAIM</code>（光线瞄准开关，决定渐晕系数写在哪套瞳坐标上） / MNUM·THIC·APER·FVCY。网页拖入和命令行批量转换走的是同一份解析代码。<br><b>有意不导入的</b>：Zemax 的 <code>FLAP</code> 浮动通光（逐结构重算，文件里只存了当前结构那一份，套到近摄结构会把边缘光线全挡掉；有渐晕系数时瞳已被完整定义）、多重结构里换玻璃（<code>GLSS</code>）、偶次非球面的 r² 项（<code>PARM 1</code>）、X 视场、非毫米单位——这些都只给提示，不闷声跳过。</p></section>
+<section><h3>镜头文件导入</h3><p><b>CODE V .seq</b> 读面数据 / CIR 通光 / ASP 非球面 / STO / FNO / WL·WTW·REF / YRI·YAN / SETVIG / ZOO。<b>Zemax .zmx</b>（UTF-16 或 UTF-8 自动识别）读 SURF·CURV·DISZ·GLAS·CONI·PARM / <code>XDAT</code>（扩展非球面 <code>XASPHERE</code> 能到 r¹⁸ / r²⁰，扩展奇次非球面 <code>XOSPHERE</code> 带 r 的奇数次项，系数都按归一化半径换算回 r 的实际幂次；<code>BINARY_2</code> 衍射面读 <code>PARM 0</code> 级次和 <code>XDAT</code> 相位系数，存成 <b>DOE M R a1 a2 …</b>，追迹按光栅方程、衍射效率按 100%） / STOP / FNUM·ENPD / FTYP·YFLN / WAVM·PWAV / VDYN·VCYN / <code>RAIM</code>（光线瞄准开关，决定渐晕系数写在哪套瞳坐标上） / MNUM·THIC·APER·FVCY。网页拖入和命令行批量转换走的是同一份解析代码。<br><b>有意不导入的</b>：Zemax 的 <code>FLAP</code> 浮动通光（逐结构重算，文件里只存了当前结构那一份，套到近摄结构会把边缘光线全挡掉；有渐晕系数时瞳已被完整定义）、多重结构里换玻璃（<code>GLSS</code>）、偶次非球面的 r² 项（<code>PARM 1</code>）、X 视场、非毫米单位——这些都只给提示，不闷声跳过。</p></section>
 
 <section><h3>曲线画法</h3><p>MTF-视场图按算出来的视场点用<b>单调三次 Hermite（PCHIP）</b>连线：过每一个点、不在点之间拱出多余波峰，只改画法不改数值。默认视场点 15 个（可选 6…31）；实测 11 / 15 / 31 点画出的曲线几乎重合，说明剩下的起伏是模型的真实结构而不是取样不足。</p></section>
 

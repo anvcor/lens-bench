@@ -211,18 +211,33 @@ var OPT = (function () {
            以 ODD 开头  ODD a1 a2 a3 …      —— r 的**任意整数次幂**，第 j 项是 r^j
          后者对应 Zemax 的「扩展奇次非球面」(XOSPHERE)，专利里印成 A3…A10 那种带奇数次的级数。
          偶次那套装不下奇数项，所以单开一个数组；两者互斥，写了 ODD 就整行按通用幂级数算。 */
-      var asph = [], aspo = null;
-      if (idx < tk.length && /^odd$/i.test(tk[idx])) {
+      /* 衍射面（Zemax 的 Binary 2，尼康 PF / 佳能 DO 元件就是它）另用 DOE 段收尾：
+           … [非球面系数] DOE M R a1 a2 …
+         相位 Φ(r) = M·Σ aᵢ·(r/R)^(2i)（弧度），M 是衍射级次、R 是归一化半径，和文件里的写法一致。
+         存的时候直接换算成 r 的实际幂次系数 bᵢ = M·aᵢ / R^(2i)，追迹里只用 bᵢ。 */
+      var asph = [], aspo = null, doe = null, endTok = tk.length;
+      for (var dj = idx; dj < tk.length; dj++) if (/^doe$/i.test(tk[dj])) { endTok = dj; break; }
+      if (endTok < tk.length) {
+        var dm = parseFloat(tk[endTok + 1]), dR = parseFloat(tk[endTok + 2]), db = [];
+        if (!isFinite(dm)) dm = 1;
+        if (!isFinite(dR) || dR <= 0) dR = 1;
+        for (var dk2 = endTok + 3, di = 1; dk2 < tk.length; dk2++, di++) {
+          var dv = parseFloat(tk[dk2]); db.push(isFinite(dv) ? dm * dv / Math.pow(dR, 2 * di) : 0);
+        }
+        while (db.length && db[db.length - 1] === 0) db.pop();
+        if (db.length) doe = { m: dm, R: dR, b: db };
+      }
+      if (idx < endTok && /^odd$/i.test(tk[idx])) {
         idx++; aspo = [];
-        for (; idx < tk.length; idx++) { var ov = parseFloat(tk[idx]); aspo.push(isFinite(ov) ? ov : 0); }
+        for (; idx < endTok; idx++) { var ov = parseFloat(tk[idx]); aspo.push(isFinite(ov) ? ov : 0); }
         while (aspo.length && aspo[aspo.length - 1] === 0) aspo.pop();
         if (!aspo.length) aspo = null;
       } else {
-        for (; idx < tk.length; idx++) { var av = parseFloat(tk[idx]); asph.push(isFinite(av) ? av : 0); }
+        for (; idx < endTok; idx++) { var av = parseFloat(tk[idx]); asph.push(isFinite(av) ? av : 0); }
         while (asph.length && asph[asph.length - 1] === 0) asph.pop();
       }
 
-      surfaces.push({ R: R, T: T, n: mat || AIR, isGlass: !!mat, matLabel: matLabel, sd: sd, k: k, asph: asph, aspo: aspo });
+      surfaces.push({ R: R, T: T, n: mat || AIR, isGlass: !!mat, matLabel: matLabel, sd: sd, k: k, asph: asph, aspo: aspo, doe: doe });
     }
     if (newList.length) warnings.push('这些是比内置目录快照更新的牌号，库里还没有，已按 nd/vd 代入模型玻璃：' +
       newList.join('、') + '。色散曲线是拟合的，二级光谱会有细微出入；要精确可在「玻璃」列直接写目录公式对应的 nd/vd。');
@@ -475,12 +490,31 @@ var OPT = (function () {
       var nl = Math.sqrt(nx * nx + ny * ny + 1); nx /= nl; ny /= nl; nz /= nl;
 
       var nNext = nOf(s, lambda);
-      var mu = nPrev / nNext;
-      var ci = D[0] * nx + D[1] * ny + D[2] * nz;
-      var s2 = 1 - mu * mu * (1 - ci * ci);
-      if (s2 < 0) return { ok: false, pts: pts, blockedAt: i, tir: true };   // 全反射
-      var ct = Math.sqrt(s2), f = ct - mu * ci;
-      D[0] = mu * D[0] + f * nx; D[1] = mu * D[1] + f * ny; D[2] = mu * D[2] + f * nz;
+      if (s.doe) {
+        /* 衍射面：光栅方程的矢量形式。切向动量多一项 (λ/2π)·∇Φ，法向由 |n'D'| = n' 补齐：
+             n'·D'_t = n·D_t + (λ/2π)·∇Φ_t，   n'·D'_n = √(n'² − |n'D'_t|²)
+           Φ 是相位（弧度），∇Φ 沿径向、大小 dΦ/dr = Σ 2i·bᵢ·r^(2i−1)，再投影到切平面。
+           光程同样多出 Φ·λ/2π（程函 S 的梯度就是 n·D + λ∇Φ/2π）。λ 换成 mm。 */
+        var lm = lambda / 1000, B = s.doe.b, dph = 0, ph = 0, rp = r2, rq = r;
+        for (var bi = 0; bi < B.length; bi++) { ph += B[bi] * rp; dph += 2 * (bi + 1) * B[bi] * rq; rp *= r2; rq *= r2; }
+        var gx = r > 1e-12 ? dph * x / r : 0, gy = r > 1e-12 ? dph * y / r : 0;    // ∇Φ（切平面前）
+        var gk = lm / (2 * Math.PI);
+        var tx = nPrev * D[0] + gk * gx, ty = nPrev * D[1] + gk * gy, tz = nPrev * D[2];
+        var tn = tx * nx + ty * ny + tz * nz;                    // 去掉法向分量
+        tx -= tn * nx; ty -= tn * ny; tz -= tn * nz;
+        var tt = tx * tx + ty * ty + tz * tz, nn2 = nNext * nNext - tt;
+        if (nn2 < 0) return { ok: false, pts: pts, blockedAt: i, tir: true };
+        var nnr = Math.sqrt(nn2);
+        D[0] = (tx + nnr * nx) / nNext; D[1] = (ty + nnr * ny) / nNext; D[2] = (tz + nnr * nz) / nNext;
+        opl += gk * ph;
+      } else {
+        var mu = nPrev / nNext;
+        var ci = D[0] * nx + D[1] * ny + D[2] * nz;
+        var s2 = 1 - mu * mu * (1 - ci * ci);
+        if (s2 < 0) return { ok: false, pts: pts, blockedAt: i, tir: true };   // 全反射
+        var ct = Math.sqrt(s2), f = ct - mu * ci;
+        D[0] = mu * D[0] + f * nx; D[1] = mu * D[1] + f * ny; D[2] = mu * D[2] + f * nz;
+      }
       nPrev = nNext;
     }
     return { ok: true, pts: pts, P: P, D: D, opl: opl, apMax: apMax, apIdx: apIdx };
@@ -573,7 +607,7 @@ var OPT = (function () {
     var y = 1, u = 0, n = 1;
     for (var i = 0; i < N; i++) {
       var s = surfaces[i], c = s.R ? 1 / s.R : 0, n2 = s.n(lambda);
-      u = (n * u - y * c * (n2 - n)) / n2; n = n2;
+      u = (n * u - y * (c * (n2 - n) + doePower(s, lambda))) / n2; n = n2;
       if (i < N - 1) y += u * s.T;
     }
     var efl = -1 / u, bfl = -y / u;
@@ -584,7 +618,7 @@ var OPT = (function () {
     for (var j = 0; j <= stopIdx && j < N; j++) {
       var sj = surfaces[j], cj = sj.R ? 1 / sj.R : 0, nj2 = sj.n(lambda);
       if (j === stopIdx) break;                             // 停在光阑面顶点平面（折射前）
-      var phi = (nj2 - nn) * cj;
+      var phi = (nj2 - nn) * cj + doePower(sj, lambda);
       M = [M[0], M[1], -phi * M[0] + M[2], -phi * M[1] + M[3]];   // 折射
       var d = sj.T / nj2;
       M = [M[0] + d * M[2], M[1] + d * M[3], M[2], M[3]];         // 转移
@@ -598,11 +632,16 @@ var OPT = (function () {
   /* ---------- 从轴上物点出发、初始斜率 u=1 的近轴光线 ----------
      返回像方斜率 uEnd。放大率 m = u/u' = 1/uEnd（拉格朗日不变量，物像空间都在空气中）。
      ------------------------------------------------------------------ */
+  /* 衍射面的近轴光焦度。相位 Φ = b₁r² + …，切向动量增量 (λ/2π)·dΦ/dr = λ·b₁·y/π，
+     代入近轴折射 n'u' = nu − yφ 得 φ_doe = −λ·b₁/π（λ 用 mm）。与 traceRay 里的光栅律同一套符号。 */
+  function doePower(s, lambda) {
+    return (s.doe && s.doe.b.length) ? -(lambda / 1000) * s.doe.b[0] / Math.PI : 0;
+  }
   function paraxFromObject(surfaces, lambda, objDist) {
     var y = objDist, u = 1, n = 1;                  // 物距 objDist>0，到面 1 顶点时高度 = objDist
     for (var i = 0; i < surfaces.length; i++) {
       var s = surfaces[i], c = s.R ? 1 / s.R : 0, n2 = s.n(lambda);
-      u = (n * u - y * c * (n2 - n)) / n2; n = n2;
+      u = (n * u - y * (c * (n2 - n) + doePower(s, lambda))) / n2; n = n2;
       if (i < surfaces.length - 1) y += u * s.T;
     }
     return u;

@@ -291,6 +291,9 @@ var LENSIO = (function () {
       // 硬光阑只认「固定」的通光（FLAP 或 DIAM 打了 fixed 标记）
       var apHard = s.ap || (s.diamFix ? s.diam : 0);
       if (apHard) { hasAp = true; if (!(vcy.length || vcx.length)) r.sd = fmt(apHard); }
+      // 孔径按「光阑半口径浮动」定义时（无 FNUM / ENPD），光阑面的半口径就是孔径本身，
+      // 必须写进这一行——光阑面不会渐晕自己，所以不受上面「有渐晕系数就不导硬光阑」那条限制。
+      if (s.isStop && !fnum && !enpd && (s.ap || s.diam)) r.sd = fmt(s.ap || s.diam);
       // 画图半口径另存一份：自动算出来的 DIAM 也要，它就是 Zemax 画图时用的镜片外形。
       // 不留这个，光路图只能靠光线包络反推半径，近摄结构会把强曲率面推到插进邻面里。
       (out.sdDraw = out.sdDraw || [])[out.rows.length] = (s.ap || s.diam) || null;
@@ -337,6 +340,20 @@ var LENSIO = (function () {
         while (ao.length && ao[ao.length - 1] === '0') ao.pop();
         if (ao.length) { r.asph = 'ODD ' + ao.join(' '); if (!r.k) r.k = '0'; }
         else out.warn.push('第 ' + i + ' 面是扩展奇次非球面，但 Extra Data 里没有系数，已按球面处理。');
+      } else if (s.type === 'BINARY_2') {
+        /* 二元面 / 衍射面（尼康 PF、佳能 DO 都是它）：基底是球面，另加相位
+             Φ(r) = M·Σ aᵢ·(r/R)^(2i)   PARM 0 = 衍射级次 M，XDAT 1 = 项数，XDAT 2 = 归一化半径 R，XDAT 3… = aᵢ
+           本页存成 `DOE M R a1 a2 …` 挂在非球面段后面，追迹按光栅方程处理，近轴按 −λ·b₁/π 计光焦度。 */
+        var xb = s.xdat || [], nB = Math.round(xb[1] || 0), Rb = xb[2] || 1, Mb = (s.parm && s.parm[0] != null) ? s.parm[0] : 1;
+        var ab = [];
+        for (j = 1; j <= nB; j++) ab.push(fmt(xb[j + 2] || 0));
+        while (ab.length && +ab[ab.length - 1] === 0) ab.pop();
+        if (ab.length) {
+          r.asph = (r.asph ? r.asph + ' ' : '') + 'DOE ' + fmt(Mb) + ' ' + fmt(Rb) + ' ' + ab.join(' ');
+          if (!r.k) r.k = '0';
+          out.warn.push('第 ' + i + ' 面是衍射面（Binary 2，' + (Mb === 1 ? '+1' : String(Mb)) + ' 级，' + ab.length + ' 项），按光栅方程追迹，'
+            + '衍射效率按 100% 算——真实 PF/DO 元件的其余级次会降低对比度，这里不体现。');
+        } else out.warn.push('第 ' + i + ' 面是衍射面 (BINARY_2)，但 Extra Data 里没有相位系数，已按球面处理。');
       } else if (s.type !== 'STANDARD') {
         out.warn.push('第 ' + i + ' 面类型 ' + s.type + ' 本页不支持，已按球面处理。');
       }
@@ -363,6 +380,9 @@ var LENSIO = (function () {
     // ---- 孔径 / 波长 / 视场 ----
     // FNUM 第二个数是孔径类型：0 = Image Space F/#（EFL/EPD，有限共轭也按无限远定义）；1 = Paraxial Working F/#
     if (fnum) { out.fno = fnum; out.fnoInf = (fnumType === 0); } else if (enpd) out.epd = enpd;
+    // 既没有 FNUM 也没有 ENPD：Zemax 的「Float By Stop Size」——孔径由光阑面的半口径定。
+    // 尼康 Z 400/4.5、Z 800/6.3 这类长焦的专利仿真就是这么写的。光阑半口径已在面循环里写进该行的 sd。
+    else out.floatStop = true;
     out.wl = []; out.wtw = [];
     for (i = 0; i < nW && i < waves.length; i++) { out.wl.push(+waves[i].nm.toFixed(4)); out.wtw.push(waves[i].w); }
     out.ref = Math.min(Math.max(pwav, 1), out.wl.length || 1);
@@ -546,7 +566,9 @@ var LENSIO = (function () {
       return false;
     }).length;
     var p = [rows.length + ' 面'];
-    if (L.fno) p.push('F/' + String(+(+L.fno).toFixed(2)));
+    if (L.apmode === 'epd') p.push('入瞳 φ' + String(+(+L.fno).toFixed(2)));
+    else if (L.apmode === 'stop') p.push('光阑浮动');
+    else if (L.fno) p.push('F/' + String(+(+L.fno).toFixed(2)));
     if (L.cfgs && L.cfgs.length > 1) p.push(L.cfgs.length + ' 结构');
     if (nAsph) p.push(nAsph + ' 非球面');
     return p.join(' · ');
@@ -568,7 +590,7 @@ var LENSIO = (function () {
       tx: rowsToText(s.rows),
       stop: Math.min((s.stop || 0) + 1, s.rows.length),
       fno: s.fno || s.epd || 5,
-      apmode: s.fno ? (s.fnoInf ? 'fnoinf' : 'fno') : (s.epd ? 'epd' : 'fno'),
+      apmode: s.fno ? (s.fnoInf ? 'fnoinf' : 'fno') : (s.epd ? 'epd' : (s.floatStop ? 'stop' : 'fno')),
       fmode: s.fieldMode === 'angle' ? 'angle' : 'height',
       fov: (s.fields && s.fields.length) ? s.fields[s.fields.length - 1] : 20,
       // 默认开光线瞄准：归一化瞳坐标必须是「光阑面上的坐标」才有意义。

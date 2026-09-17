@@ -110,7 +110,8 @@
   var DASH = ['', '5 2.5', '1.6 2.4', '8 2.5 1.6 2.5', '11 3', '2 2 7 2'];
 
   var state = { rows: [], stop: 0, sel: 0, wl: wlSet('p5'), pri: 1,
-                cfgs: null, cfg: 0, vigH: null, sdDraw: null, sdAp: null, vigAuto: null };
+                cfgs: null, cfg: 0, vigH: null, sdDraw: null, sdAp: null, vigAuto: null, cfgs0: null, T0: null };
+  // cfgs0 / T0 = 载入时文件原样的多重结构和各面厚度，只给「最佳对焦」认对焦凸轮用（界面改动会写回 cfgs）
   // cfgs = 多重结构；vigH = 渐晕表对应的像高列表；sdDraw = 画图半口径；
   // sdAp = 真实通光（只含写死的 CIR / 固定 DIAM / FLAP，「一键渐晕」按它判）；
   // vigAuto = 各结构自己算出来的渐晕表 { 结构号: {f, vuy, vly, vux, vlx, note} }，f 是视场占比
@@ -197,18 +198,21 @@
     var NA = asphCols(), i2;
     var hd = '<tr><th style="min-width:52px">表面<br>编号</th>' +
       '<th style="min-width:46px">表面<br>类型</th>' +
-      '<th style="min-width:88px">Y 半径</th>' +
+      '<th style="min-width:88px">Radius</th>' +
       '<th style="min-width:76px">厚度</th>' +
       '<th style="min-width:126px">玻璃</th>' +
-      '<th style="min-width:80px">Y 半孔径</th>' +
+      '<th style="min-width:80px">半孔径</th>' +
       '<th style="min-width:74px">圆锥<br>系数</th>';
     for (i2 = 0; i2 < NA; i2++)
       hd += '<th class="ac' + (i2 ? '' : ' ac0') + '" style="min-width:132px">A' + (4 + 2 * i2) + '</th>';
     $('ldeHead').innerHTML = hd + '</tr>';
 
     var pad = '<td></td><td></td><td></td>' + new Array(NA + 1).join('<td></td>');
+    // 物面：Radius 固定无限（平面物）；厚度就是物距，和顶栏「物距」是同一个量，改哪边都行
     var h = ['<tr class="fixed"><td class="num">物面</td><td class="typ">球面</td>' +
-      '<td class="ro">无限</td><td class="ro">无限</td>' + pad + '</tr>'];
+      '<td class="ro">无限</td><td><input id="ldeObjd" data-obj="1" value="' + esc($('objd').value) +
+      '" placeholder="inf" title="物距：物面到第 1 面顶点的距离 mm，写 inf 为无限远。改完按「最佳对焦」，镜头会沿自己的对焦群重新对焦"' +
+      ' spellcheck="false" autocapitalize="off" autocorrect="off"></td>' + pad + '</tr>'];
     state.rows.forEach(function (r, i) {
       var isStop = i === state.stop, a = asphArr(r), td = '';
       for (i2 = 0; i2 < NA; i2++) td += cellA(i, i2, asphDisp(a[i2] || ''));
@@ -216,13 +220,50 @@
         '<td class="num' + (isStop ? ' stop' : '') + '" data-r="' + i + '" title="点击设为光阑">' + (isStop ? '光阑' : (i + 1)) + '</td>' +
         '<td class="typ" data-typ="' + i + '">' + (isAsph(r) ? '非球面' : '球面') + '</td>' +
         cell(i, 'R', r.R, 'inf', cfgHas(i, 'R')) + cell(i, 'T', r.T, '0', cfgHas(i, 'T')) +
-        cellT(i, 'mat', r.mat, '') + cell(i, 'sd', r.sd, '') +
+        cellT(i, 'mat', r.mat, '') + cellSd(i, r) +
         cell(i, 'k', r.k, '') + td + '</tr>');
     });
     h.push('<tr class="fixed"><td class="num">像面</td><td class="typ">球面</td>' +
       '<td class="ro">无限</td><td class="ro">0.0000</td>' + pad + '</tr>');
     ensureGlassList();
     $('ldeBody').innerHTML = h.join('');
+  }
+  /* 半孔径列。格子里有数（CODE V 的 CIR / 手填）= 硬光阑：照常显示，追迹时光线超出即被挡。
+     没数的面用灰字显示参考值，不挡光——在格子里填数就变成硬光阑。灰字来源的优先级同 Layout：
+     文件写死的通光（Zemax 固定 DIAM / FLAP）→ 文件的半口径（Zemax 自动 DIAM）→ 本页按光线包络算的画图半径。
+     最后一种要算完一次才有，所以计算完成后 syncSdHints() 再补一遍，不重绘整张表（不打断正在输入的格子）。 */
+  var SD_HARD = '硬光阑：追迹时光线超出即被挡。清空则退回参考值';
+  function sdHint(i) {
+    var a = state.sdAp && state.sdAp[i], d = state.sdDraw && state.sdDraw[i];
+    if (a) return { v: a, why: '文件里写死的通光（Zemax 固定 DIAM / FLAP）：「一键渐晕」和 Spot 逐面裁剪按它算，MTF 追迹不裁光线。填数则作为硬光阑' };
+    if (d) return { v: d, why: '文件里的半口径（Zemax 自动算的 DIAM），只用于画图，不挡光。填数则作为硬光阑' };
+    var L = last && last.lay && last.lay.drawSd;
+    // 空白面贴着邻面时会被 Layout 的防穿透钳位压到 ~0，那不是半口径，不显示
+    if (L && last.surfaces && last.surfaces.length === state.rows.length && L[i] > 1e-3)
+      return { v: L[i], why: '文件没写半口径，这是本页按光线包络算的画图半径，不挡光。填数则作为硬光阑' };
+    return null;
+  }
+  function fmtSd(v) { return String(+(+v).toFixed(4)); }
+  function cellSd(i, r) {
+    var h = r.sd ? null : sdHint(i);
+    return '<td><input data-r="' + i + '" data-f="sd" value="' + esc(r.sd) + '" placeholder="' + (h ? fmtSd(h.v) : '') +
+      '" title="' + esc(r.sd ? SD_HARD : (h ? h.why : '')) + '" spellcheck="false" autocapitalize="off" autocorrect="off"></td>';
+  }
+  function syncSdHints() {
+    Array.prototype.forEach.call($('ldeBody').querySelectorAll('input[data-f="sd"]'), function (el) {
+      var i = +el.dataset.r, r = state.rows[i]; if (!r) return;
+      var h = r.sd ? null : sdHint(i);
+      el.placeholder = h ? fmtSd(h.v) : '';
+      el.title = r.sd ? SD_HARD : (h ? h.why : '');
+    });
+  }
+  /* 物距两处可改：顶栏「物距」和 LDM 物面行的厚度。改哪边都同步另一边，并写回当前结构——
+     和改厚度格子写回当前结构是一个道理，否则切走再切回来，物距回到文件值、厚度却是改过的，对不上。 */
+  function setObjd(text, from) {
+    if (from !== $('objd')) $('objd').value = text;
+    var o = $('ldeObjd'); if (o && from !== o) o.value = text;
+    var c = state.cfgs && state.cfgs[state.cfg];
+    if (c) c.obj = parseObjDist(text);
   }
   function cellA(i, j, v) {
     return '<td class="ac' + (j ? '' : ' ac0') + '"><input data-r="' + i + '" data-f="a' + j + '" value="' + esc(v) +
@@ -309,6 +350,7 @@
     Object.keys(c.rdy).forEach(function (k) { if (state.rows[k]) state.rows[k].R = (c.rdy[k] === 0 ? 'inf' : String(c.rdy[k])); });
     if (c.fno != null) $('fno').value = c.fno;
     $('objd').value = fmtObjDist(c.obj == null ? Infinity : c.obj);   // JSON 里 Infinity 会变成 null
+    var oc = $('ldeObjd'); if (oc) oc.value = $('objd').value;
   }
   /* 改到被结构覆盖的格子时，同时更新该结构存的值，否则一切结构就被冲掉 */
   function cfgWriteBack(ri, field, val) {
@@ -407,6 +449,7 @@
       stop: state.stop, sel: state.sel, pri: state.pri,
       wl: state.wl.map(function (w) { return [w.nm, w.w, w.c]; }),
       cfg: state.cfg, cfgs: state.cfgs, vigH: state.vigH, vigAuto: state.vigAuto,
+      sdDraw: state.sdDraw, sdAp: state.sdAp,
       ctl: c
     });
   }
@@ -419,6 +462,7 @@
     state.wl = o.wl.map(function (a) { return { nm: a[0], w: a[1], c: a[2] }; });
     state.cfgs = o.cfgs || null; state.cfg = o.cfg || 0; state.vigH = o.vigH || null;
     state.vigAuto = o.vigAuto || null;
+    if ('sdDraw' in o) { state.sdDraw = o.sdDraw || null; state.sdAp = o.sdAp || null; }
     HCTRL.forEach(function (k) { $(k).value = o.ctl[k]; });
     $('aim').checked = !!o.ctl.aim;
     syncApMode(); syncFMode(); renderCfg(); renderLDE(); renderWL();
@@ -455,6 +499,13 @@
   /* ================= 主计算 ================= */
   var last = null;
   function compute() {
+    // 半口径数组按行下标对齐。插删面在 insBtn / delBtn 里同步；粘贴会在末尾补行，这里补 null。
+    // 长度对不上时光学内核会整份忽略它们（画图、一键渐晕、Spot 就全退回光线包络）。
+    [state.sdDraw, state.sdAp].forEach(function (a) {
+      if (!a) return;
+      while (a.length < state.rows.length) a.push(null);
+      if (a.length > state.rows.length) a.length = state.rows.length;
+    });
     histRecord();
     var st = readState();
     var p = OPT.parsePrescription(st.tx);
@@ -517,7 +568,7 @@
     }
     if (!isFinite(sys.efl) || Math.abs(sys.efl) > 1e7) msgs.push('系统近轴焦距发散（接近无焦），读数可能无意义。');
     if (st.apmode === 'stop' && !(p.surfaces[stopIdx] && p.surfaces[stopIdx].sd))
-      msgs.push('光阑面（第 ' + (stopIdx + 1) + ' 面）没有 Y 半孔径，无法按光阑浮动，已退回 F/# 定义。');
+      msgs.push('光阑面（第 ' + (stopIdx + 1) + ' 面）没有半孔径，无法按光阑浮动，已退回 F/# 定义。');
     if (st.aim && !sys.aiming) msgs.push('本次未能启用光线瞄准（求不出光阑半径）。');
     // 像面是不是就落在轴上焦点处？（近轴细光线与光轴的交点 vs 当前像面）
     // 只取决于曲率 / 厚度 / 折射率，与孔径、非球面高次项无关，所以能直接判断
@@ -547,7 +598,7 @@
         ? '半孔径引起渐晕：边缘视场等效通光瞳面积仅剩 ' + (edge.thru * 100).toFixed(0) +
           '%（各视场见数据表「通光率」）。衍射 MTF 按该视场的等效椭圆瞳计算，截止频率随瞳半宽同比下降。'
         : (p.surfaces.some(function (s) { return s.sd; })
-          ? 'Y 半孔径引起渐晕：边缘视场通光率 ' + (edge.thru * 100).toFixed(0) + '%（各视场见 MTF 数据表）。MTF 按实际通过的光线计算。'
+          ? '半孔径引起渐晕：边缘视场通光率 ' + (edge.thru * 100).toFixed(0) + '%（各视场见 MTF 数据表）。MTF 按实际通过的光线计算。'
           : '部分视场有光线丢失（面外或全反射），该处 MTF 已按剩余光线计算。'));
     }
 
@@ -559,6 +610,7 @@
         msgs.push('波前 PV 达 ' + pvm.toFixed(0) + ' λ，超出 ' + st.ngrid + '² 瞳网格的相位取样能力，衍射 MTF 可能失真——请调大瞳面网格或改用几何模式。');
     }
     last = { sys: sys, mtf: mtf, lay: lay, aber: aber, fan: fan, opt: opt, st: st, dt: dt, surfaces: p.surfaces };
+    syncSdHints();
     spotStale();
     showMsgs(msgs);
     $('surfBadge').textContent = p.surfaces.length + ' 面 · ' + p.surfaces.filter(function (s) { return s.isGlass; }).length + ' 片';
@@ -684,6 +736,7 @@
     svg.setAttribute('viewBox', '0 0 ' + PX.toFixed(0) + ' ' + PY.toFixed(0));
     svg.setAttribute('preserveAspectRatio', 'xMidYMid meet');
     svg.innerHTML = g.join('');
+    if (ids.svg === 'layout') layBase(+PX.toFixed(0), +PY.toFixed(0));   // 重绘后保留用户的缩放视窗
 
     var drawn = L.bundles.reduce(function (a2, b) { return a2 + b.rays.length; }, 0);
     $(ids.badge).textContent = L.elements.length + ' 片 · ' + drawn + ' 条';
@@ -709,6 +762,121 @@
         + ' · 主波长 ' + C.opt.lambdas[C.opt.primary].nm + ' nm · 1 : 1</span>';
     }
   }
+
+  /* ================= Layout 缩放 / 平移 / 复制图片 =================
+     只改 viewBox，不碰画出来的元素：线宽、字号都跟着一起放大，和 Zemax 里放大 Layout 的观感一致。
+     状态存成「视窗中心在整图里的比例 + 倍率」，每次重算重绘（换镜头、改参数、窗口变宽）之后
+     按比例还原，所以放大着改一个曲率半径，视窗不会跳回整图。倍率 1 就是整图，此时不能平移。 */
+  var LAYZ = { W: 0, H: 0, cx: 0.5, cy: 0.5, zoom: 1, drag: null };
+  function layBase(W, H) {
+    if (W !== LAYZ.W || H !== LAYZ.H) { LAYZ.W = W; LAYZ.H = H; }
+    layApply();
+  }
+  function layApply() {
+    var svg = $('layout'); if (!LAYZ.W) return;
+    var w = LAYZ.W / LAYZ.zoom, h = LAYZ.H / LAYZ.zoom;
+    if (LAYZ.zoom <= 1.0001) { LAYZ.zoom = 1; LAYZ.cx = 0.5; LAYZ.cy = 0.5; w = LAYZ.W; h = LAYZ.H; }
+    // 视窗中心夹在整图范围内，放大后不能把图整个拖出视野
+    var cx = Math.min(Math.max(LAYZ.cx * LAYZ.W, w / 2), LAYZ.W - w / 2), cy = Math.min(Math.max(LAYZ.cy * LAYZ.H, h / 2), LAYZ.H - h / 2);
+    LAYZ.cx = cx / LAYZ.W; LAYZ.cy = cy / LAYZ.H;
+    svg.setAttribute('viewBox', (cx - w / 2).toFixed(2) + ' ' + (cy - h / 2).toFixed(2) + ' ' + w.toFixed(2) + ' ' + h.toFixed(2));
+    svg.classList.toggle('zoomed', LAYZ.zoom > 1);
+    $('layZoomLbl').textContent = LAYZ.zoom.toFixed(1) + '×';
+  }
+  /* 屏幕坐标 → viewBox 坐标（CTM 里已含 meet 的留白偏移，直接用它最准） */
+  function layPt(svg, ev) {
+    var pt = svg.createSVGPoint(); pt.x = ev.clientX; pt.y = ev.clientY;
+    var m = svg.getScreenCTM(); if (!m) return null;
+    return pt.matrixTransform(m.inverse());
+  }
+  /* 以 (px,py)（viewBox 坐标）为不动点缩放 f 倍 */
+  function layZoomAt(f, px, py) {
+    var z0 = LAYZ.zoom, z1 = Math.min(40, Math.max(1, z0 * f));
+    if (z1 === z0) return;
+    if (px == null) { px = LAYZ.cx * LAYZ.W; py = LAYZ.cy * LAYZ.H; }
+    // 不动点：p 在新旧视窗里的相对位置不变 → 新中心 = p − (p − 旧中心)·z0/z1
+    var cx = LAYZ.cx * LAYZ.W, cy = LAYZ.cy * LAYZ.H;
+    LAYZ.cx = (px - (px - cx) * z0 / z1) / LAYZ.W; LAYZ.cy = (py - (py - cy) * z0 / z1) / LAYZ.H;
+    LAYZ.zoom = z1; layApply();
+  }
+  (function () {
+    var svg = $('layout');
+    svg.addEventListener('wheel', function (ev) {
+      if (!LAYZ.W) return;
+      ev.preventDefault();
+      var p = layPt(svg, ev); if (!p) return;
+      layZoomAt(Math.pow(1.0015, -ev.deltaY), p.x, p.y);   // 每 100 单位约 ×1.16，触控板的细刻度也顺滑
+    }, { passive: false });
+    svg.addEventListener('pointerdown', function (ev) {
+      if (LAYZ.zoom <= 1 || ev.button !== 0) return;
+      var p = layPt(svg, ev); if (!p) return;
+      LAYZ.drag = { x: p.x, y: p.y, cx: LAYZ.cx, cy: LAYZ.cy };
+      svg.setPointerCapture(ev.pointerId); svg.classList.add('dragging');
+    });
+    svg.addEventListener('pointermove', function (ev) {
+      var d = LAYZ.drag; if (!d) return;
+      var p = layPt(svg, ev); if (!p) return;
+      // 拖动时 viewBox 在变，CTM 跟着变；用拖动起点时的中心 + 当前指针差算，避免累积漂移
+      LAYZ.cx = d.cx - (p.x - d.x) / LAYZ.W; LAYZ.cy = d.cy - (p.y - d.y) / LAYZ.H;
+      layApply();
+      var q = layPt(svg, ev); if (q) { d.x = q.x; d.y = q.y; d.cx = LAYZ.cx; d.cy = LAYZ.cy; }
+    });
+    var end = function (ev) { if (!LAYZ.drag) return; LAYZ.drag = null; svg.classList.remove('dragging'); try { svg.releasePointerCapture(ev.pointerId); } catch (e) {} };
+    svg.addEventListener('pointerup', end); svg.addEventListener('pointercancel', end);
+    svg.addEventListener('dblclick', function () { LAYZ.zoom = 1; layApply(); });
+    $('layZoomIn').addEventListener('click', function () { layZoomAt(1.5); });
+    $('layZoomOut').addEventListener('click', function () { layZoomAt(1 / 1.5); });
+    $('layZoomReset').addEventListener('click', function () { LAYZ.zoom = 1; layApply(); });
+  })();
+
+  /* 把 SVG 当前视图渲染成 PNG（2× 分辨率，底色用面板色，否则透明底贴到深色软件里看不见）。
+     字体：SVG 经 <img> 转位图时拿不到网页字体，标注会退回系统等宽字体，线条颜色都是内联属性、不受影响。 */
+  function svgToPngBlob(svg, scale) {
+    return new Promise(function (resolve, reject) {
+      var vb = svg.viewBox.baseVal, W = Math.round(vb.width * scale), H = Math.round(vb.height * scale);
+      var clone = svg.cloneNode(true);
+      clone.setAttribute('xmlns', 'http://www.w3.org/2000/svg');
+      clone.setAttribute('width', W); clone.setAttribute('height', H);
+      var url = URL.createObjectURL(new Blob([new XMLSerializer().serializeToString(clone)], { type: 'image/svg+xml;charset=utf-8' }));
+      var img = new Image();
+      img.onload = function () {
+        var c = document.createElement('canvas'); c.width = W; c.height = H;
+        var ctx = c.getContext('2d');
+        ctx.fillStyle = css('--panel'); ctx.fillRect(0, 0, W, H);
+        ctx.drawImage(img, 0, 0, W, H);
+        URL.revokeObjectURL(url);
+        c.toBlob(function (b) { b ? resolve(b) : reject(new Error('toBlob 失败')); }, 'image/png');
+      };
+      img.onerror = function () { URL.revokeObjectURL(url); reject(new Error('SVG 转位图失败')); };
+      img.src = url;
+    });
+  }
+  function flashBtn(btn, text, ok) {
+    var old = btn.textContent; btn.textContent = text; btn.classList.toggle('ok', !!ok);
+    setTimeout(function () { btn.textContent = old; btn.classList.remove('ok'); }, 1800);
+  }
+  $('layCopy').addEventListener('click', function () {
+    var btn = this, svg = $('layout');
+    if (!svg.innerHTML) return;
+    var blobP = svgToPngBlob(svg, 2);
+    // ClipboardItem 接受 Promise<Blob>：write 必须在用户手势里同步调用，位图可以晚点到
+    var done = function () { flashBtn(btn, '已复制 ✓', true); };
+    var fallback = function (why) {
+      blobP.then(function (b) {
+        var a = document.createElement('a'); a.href = URL.createObjectURL(b);
+        a.download = 'layout-' + ($('ex').value || 'lens') + '.png'; a.click();
+        setTimeout(function () { URL.revokeObjectURL(a.href); }, 5000);
+        flashBtn(btn, '已下载 PNG', true);
+        PENDMSG.push('复制图片：剪贴板不可用（' + why + '），已改为下载 PNG。'); schedule(0);   // 提示要靠一次重算才刷出来
+      }, function (e) { flashBtn(btn, '失败'); PENDMSG.push('复制图片失败：' + e.message); schedule(0); });
+    };
+    if (navigator.clipboard && window.ClipboardItem) {
+      var item;
+      try { item = new ClipboardItem({ 'image/png': blobP }); }
+      catch (e) { fallback(e.message); return; }
+      navigator.clipboard.write([item]).then(done, function (e) { fallback(e && e.message ? e.message : '写入被拒绝'); });
+    } else fallback('浏览器不支持 ClipboardItem，或页面不在安全上下文');
+  });
 
   function renderLayout() {
     drawLayout({ lay: last.lay, sys: last.sys, mtf: last.mtf, opt: last.opt,
@@ -1105,6 +1273,7 @@
   tb.addEventListener('input', function (e) {
     var t = e.target;
     if (t.tagName !== 'INPUT') return;
+    if (t.dataset.obj) { setObjd(t.value, t); schedule(180); return; }
     var r = state.rows[+t.dataset.r]; if (!r) return;
     var fld = t.dataset.f;
     glassListSync(t, false);
@@ -1135,7 +1304,7 @@
   });
   tb.addEventListener('paste', function (e) {
     var inp = e.target;
-    if (!inp || inp.tagName !== 'INPUT') return;
+    if (!inp || inp.tagName !== 'INPUT' || inp.dataset.obj) return;
     var txt = ((e.clipboardData || window.clipboardData).getData('text') || '');
     if (!/[\t\n]/.test(txt.trim())) return;                       // 单格：走默认行为
     e.preventDefault();
@@ -1163,6 +1332,7 @@
   $('insBtn').addEventListener('click', function () {
     var i = Math.min(state.sel + 1, state.rows.length);
     state.rows.splice(i, 0, blankRow());
+    [state.sdDraw, state.sdAp].forEach(function (a) { if (a) a.splice(i, 0, null); });
     if (state.stop >= i) state.stop++;
     state.sel = i; renderLDE(); schedule(0);
   });
@@ -1170,6 +1340,7 @@
     if (state.rows.length <= 2) return;
     var i = Math.min(state.sel, state.rows.length - 1);
     state.rows.splice(i, 1);
+    [state.sdDraw, state.sdAp].forEach(function (a) { if (a) a.splice(i, 1); });
     if (state.stop > i) state.stop--;
     state.stop = Math.min(state.stop, state.rows.length - 1);
     state.sel = Math.max(0, Math.min(i, state.rows.length - 1));
@@ -1178,6 +1349,7 @@
   $('stopBtn').addEventListener('click', function () { state.stop = state.sel; renderLDE(); schedule(0); });
 
   ['fno', 'fov', 'defoc', 'freqs', 'objd'].forEach(function (id) { $(id).addEventListener('input', function () { schedule(180); }); });
+  $('objd').addEventListener('input', function () { setObjd(this.value, this); });
   ['ngrid', 'nfield', 'nviz', 'nfviz', 'aim', 'colorby', 'mtfmode'].forEach(function (id) { $(id).addEventListener('change', function () { schedule(0); }); });
   $('apmode').addEventListener('change', function () { syncApMode(); schedule(0); });
 
@@ -1275,6 +1447,8 @@
     // 文件自带的系数还在 cfgs[i].vig 里，按一下工具栏那个键就能换回去。
     state.vigAuto = e.vigAuto ? JSON.parse(JSON.stringify(e.vigAuto)) : null;
     state.cfgs = e.cfgs ? JSON.parse(JSON.stringify(e.cfgs)) : null;
+    state.cfgs0 = state.cfgs ? JSON.parse(JSON.stringify(state.cfgs)) : null;
+    state.T0 = state.rows.map(function (r) { return parseFloat(r.T) || 0; });
     state.cfg = 0;
     if (state.cfgs) applyCfg(0);
     renderCfg();
@@ -1304,36 +1478,154 @@
   }
   var LENSMSG = [], PENDMSG = [];
 
+  /* ================= 最佳对焦 =================
+     多重结构里带着镜头自己的对焦方式：同一个焦段、不同物距的几个结构，差别只在对焦群两侧的间隔上。
+     把这几个结构按 u = 1/物距 排好，各间隔对 u 分段线性插值，就是一条「对焦凸轮」——
+     浮动对焦（几组各走各的）自动包含在内，每个结构总长守恒、插值出来的也守恒。
+     「最佳对焦」沿这条凸轮搜 u，使当前物距下轴上 RMS 最小，像面不动（传感器是固定的）。
+     判据用轴上而不是多视场平均：相机对焦就是对中心；多视场平均在场曲大的广角上会被拉走
+     （FE 12-24 GM 广角端 0.06x：三视场判据离厂商结构差 673 µm，轴上判据 78 µm）。
+     校验：从 INF 结构出发、物距改成别的结构的物距，搜出的厚度和那个结构的差
+     适马 105 Macro 2.6 µm（0.06x）/ 1.4 µm（1:1）、索尼 12-24 长焦端 12 µm。
+
+     认对焦群：取离当前结构最近（差的面最少）的「物距不同」的结构，它们相差的那几个间隔就是对焦群；
+     凡是只在这些间隔上和当前结构不同的结构都进凸轮。这样变焦镜头的其他焦段不会混进来
+     （变焦间隔也在变）。同一物距出现两组不同厚度、或对焦时曲率也在变，就认不出，退回移动像面。 */
+  function focusCam(cfgs, T0, cur) {
+    if (!cfgs || cfgs.length < 2 || !cfgs[cur]) return null;
+    var tOf = function (c, k) { return (c.thi && c.thi[k] != null) ? +c.thi[k] : +T0[k]; };
+    var uOf = function (c) { var D = c.obj; return (D == null || !isFinite(D) || D <= 0 || D >= 1e7) ? 0 : 1 / D; };
+    var keysT = {}, keysR = {};
+    cfgs.forEach(function (c) {
+      Object.keys(c.thi || {}).forEach(function (k) { keysT[k] = 1; });
+      Object.keys(c.rdy || {}).forEach(function (k) { keysR[k] = 1; });
+    });
+    var diff = function (a, b) {
+      var d = [];
+      Object.keys(keysT).forEach(function (k) { if (Math.abs(tOf(a, k) - tOf(b, k)) > 1e-9) d.push('T' + k); });
+      Object.keys(keysR).forEach(function (k) {
+        var ra = (a.rdy || {})[k], rb = (b.rdy || {})[k];
+        if ((ra == null) !== (rb == null) || Math.abs((ra || 0) - (rb || 0)) > 1e-9) d.push('R' + k);
+      });
+      return d;
+    };
+    var c0 = cfgs[cur], u0 = uOf(c0), near = null;
+    cfgs.forEach(function (c, i) {
+      if (i === cur || Math.abs(uOf(c) - u0) < 1e-12) return;
+      var d = diff(c0, c);
+      if (!near || d.length < near.d.length) near = { d: d };
+    });
+    if (!near || !near.d.length) return { why: '没有物距不同、间隔也不同的结构' };
+    if (near.d.some(function (x) { return x[0] === 'R'; })) return { why: '对焦时曲率也在变，不是纯移动镜组' };
+    var F = {}; near.d.forEach(function (x) { F[x] = 1; });
+    var nodes = [];
+    cfgs.forEach(function (c, i) { if (diff(c0, c).every(function (x) { return F[x]; })) nodes.push({ i: i, u: uOf(c) }); });
+    nodes.sort(function (a, b) { return a.u - b.u; });
+    var ks = near.d.map(function (x) { return +x.slice(1); }).sort(function (a, b) { return a - b; });
+    for (var n = 1; n < nodes.length; n++) {
+      if (Math.abs(nodes[n].u - nodes[n - 1].u) < 1e-12) {
+        var same = ks.every(function (k) { return Math.abs(tOf(cfgs[nodes[n].i], k) - tOf(cfgs[nodes[n - 1].i], k)) < 1e-9; });
+        if (!same) return { why: '同一物距下有几组不同的间隔（混进了变焦），认不出单一的对焦凸轮' };
+        nodes.splice(n, 1); n--;
+      }
+    }
+    if (nodes.length < 2) return { why: '对焦结构不足 2 个' };
+    return { surf: ks, u: nodes.map(function (q) { return q.u; }), idx: nodes.map(function (q) { return q.i; }),
+             t: nodes.map(function (q) { return ks.map(function (k) { return tOf(cfgs[q.i], k); }); }) };
+  }
+  function camAt(cam, u) {
+    var U = cam.u, n = U.length, j = 0;
+    if (u >= U[n - 1]) j = n - 2; else if (u > U[0]) { while (j < n - 2 && u > U[j + 1]) j++; }
+    var f = (u - U[j]) / (U[j + 1] - U[j]);
+    return cam.surf.map(function (_, q) { return cam.t[j][q] + f * (cam.t[j + 1][q] - cam.t[j][q]); });
+  }
+  function fmtT(v) { return String(+v.toFixed(6)); }
+  function camFocus(cam) {
+    var sur0 = last.surfaces;
+    var base = Object.assign({}, last.opt, { nGrid: 12, freqs: [], nRayViz: 3, nFieldViz: 1, fieldsMTF: [0], nField: 1, mtfMode: 'geo' });
+    var rmsAt = function (sur) {
+      var s = OPT.buildSystem(sur, base); s.vig = last.sys.vig;
+      var row = OPT.mtfVsField(s, base).rows[0];
+      return (row && isFinite(row.rms) && row.rms > 0) ? row.rms : Infinity;
+    };
+    var cost = function (u) {
+      var tv = camAt(cam, u);
+      return rmsAt(sur0.map(function (sf, k) { var q = cam.surf.indexOf(k); return q < 0 ? sf : Object.assign({}, sf, { T: tv[q] }); }));
+    };
+    var r0 = rmsAt(sur0);
+    var U = cam.u, span = U[U.length - 1] - U[0];
+    var D = last.opt.objDist, uT = (isFinite(D) && D > 0) ? 1 / D : 0;
+    var lo = Math.min(U[0], uT) - 0.1 * span, hi = Math.max(U[U.length - 1], uT) + 0.1 * span;
+    var best = uT, bv = Infinity, i, c;
+    for (i = 0; i <= 16; i++) { var u = lo + (hi - lo) * i / 16; c = cost(u); if (c < bv) { bv = c; best = u; } }
+    // 黄金分割精修，括号收到对焦群厚度变化 < 0.2 µm
+    var a = best - (hi - lo) / 16, b = best + (hi - lo) / 16, g = (Math.sqrt(5) - 1) / 2;
+    var dTdu = 0;
+    cam.surf.forEach(function (_, q) { dTdu = Math.max(dTdu, Math.abs(cam.t[cam.t.length - 1][q] - cam.t[0][q]) / span); });
+    var x1 = b - g * (b - a), x2 = a + g * (b - a), f1 = cost(x1), f2 = cost(x2), it = 0;
+    while ((b - a) * dTdu > 2e-4 && it++ < 60) {
+      if (f1 < f2) { b = x2; x2 = x1; f2 = f1; x1 = b - g * (b - a); f1 = cost(x1); }
+      else { a = x1; x1 = x2; f1 = f2; x2 = a + g * (b - a); f2 = cost(x2); }
+    }
+    var uB = f1 <= f2 ? x1 : x2, rB = Math.min(f1, f2);
+    if (bv < rB) { uB = best; rB = bv; }
+    if (!isFinite(rB)) return false;
+    var tv = camAt(cam, uB), cfg = state.cfgs[state.cfg];
+    cam.surf.forEach(function (k, q) {
+      state.rows[k].T = fmtT(tv[q]);
+      if (cfg && cfg.thi) cfg.thi[k] = +tv[q].toFixed(6);
+    });
+    var out = uB < U[0] - 0.05 * span || uB > U[U.length - 1] + 0.05 * span;
+    PENDMSG.push('最佳对焦：沿镜头自带的对焦群（结构 ' + cam.idx.map(function (q) { return 'Z' + (q + 1); }).join(' / ') +
+      ' 的间隔插值，移动 ' + cam.surf.map(function (k) { return 'S' + (k + 1); }).join(' / ') + '）对到 ' +
+      (isFinite(D) && D > 0 ? D.toLocaleString('en-US') + ' mm' : '无限远') + '，轴上 RMS ' +
+      (isFinite(r0) ? r0.toFixed(2) : '—') + ' → ' + rB.toFixed(2) + ' µm，像面不动。' +
+      (out ? '⚠ 这个物距已经超出文件给出的对焦行程，间隔是外推出来的，实际镜头可能对不到。' : ''));
+    renderLDE();
+    return true;
+  }
+  function planeFocus(why) {
+    var sur = last.surfaces;
+    // 直接沿用当前一次计算的全部设置（视场定义 / 物距 / 渐晕 / 波长），只把采样调粗、频率清空
+    var base = Object.assign({}, last.opt, { nGrid: 12, freqs: [], nRayViz: 3, nFieldViz: 1 });
+    if (base.fieldsMTF && base.fieldsMTF.length > 3) {
+      var fm = base.fieldsMTF;
+      base.fieldsMTF = [fm[0], fm[Math.floor((fm.length - 1) / 2)], fm[fm.length - 1]];
+    } else if (!base.fieldsMTF) base.nField = 3;
+    var cost = function (d) {
+      var o = Object.assign({}, base, { defocus: d });
+      var s = OPT.buildSystem(sur, o); s.vig = last.sys.vig;
+      var r = OPT.mtfVsField(s, o);
+      var s2 = 0, n = 0;
+      r.rows.forEach(function (row) { if (isFinite(row.rms) && row.rms > 0) { s2 += row.rms * row.rms; n++; } });
+      return n ? Math.sqrt(s2 / n) : Infinity;
+    };
+    var efl = Math.abs(last.sys.efl); if (!isFinite(efl) || efl > 1e5) efl = 50;
+    var lo = -0.02 * efl, hi = 0.02 * efl, best = 0, bv = Infinity, step;
+    for (var pass = 0; pass < 2; pass++) {
+      step = (hi - lo) / 16;
+      for (var i = 0; i <= 16; i++) { var d = lo + i * step, c = cost(d); if (c < bv) { bv = c; best = d; } }
+      lo = best - step; hi = best + step;
+    }
+    $('defoc').value = (+best.toFixed(4));
+    PENDMSG.push('最佳对焦：' + (why ? '认不出对焦群（' + why + '）' : '这颗镜头没有多重结构，不知道哪组是对焦群') +
+      '，改为移动像面（三视场平均 RMS 最小），离焦 = ' + (+best.toFixed(4)) + ' mm。');
+  }
   $('focusBtn').addEventListener('click', function () {
     if (!last) return;
     var btn = this, label = btn.textContent;
     btn.textContent = '搜索中…'; btn.disabled = true;
     setTimeout(function () {
-      var sur = last.surfaces;
-      // 直接沿用当前一次计算的全部设置（视场定义 / 物距 / 渐晕 / 波长），只把采样调粗、频率清空
-      var base = Object.assign({}, last.opt, { nGrid: 12, freqs: [], nRayViz: 3, nFieldViz: 1 });
-      if (base.fieldsMTF && base.fieldsMTF.length > 3) {
-        var fm = base.fieldsMTF;
-        base.fieldsMTF = [fm[0], fm[Math.floor((fm.length - 1) / 2)], fm[fm.length - 1]];
-      } else if (!base.fieldsMTF) base.nField = 3;
-      var cost = function (d) {
-        var o = Object.assign({}, base, { defocus: d });
-        var s = OPT.buildSystem(sur, o); s.vig = last.sys.vig;
-        var r = OPT.mtfVsField(s, o);
-        var s2 = 0, n = 0;
-        r.rows.forEach(function (row) { if (isFinite(row.rms) && row.rms > 0) { s2 += row.rms * row.rms; n++; } });
-        return n ? Math.sqrt(s2 / n) : Infinity;
-      };
-      var efl = Math.abs(last.sys.efl); if (!isFinite(efl) || efl > 1e5) efl = 50;
-      var lo = -0.02 * efl, hi = 0.02 * efl, best = 0, bv = Infinity, step;
-      for (var pass = 0; pass < 2; pass++) {
-        step = (hi - lo) / 16;
-        for (var i = 0; i <= 16; i++) { var d = lo + i * step, c = cost(d); if (c < bv) { bv = c; best = d; } }
-        lo = best - step; hi = best + step;
+      try {
+        // 插删过面，下标对不上文件原样的结构，凸轮不可用
+        var cam = (state.T0 && state.T0.length === state.rows.length && last.surfaces.length === state.rows.length)
+          ? focusCam(state.cfgs0, state.T0, state.cfg) : null;
+        var done = cam && !cam.why && camFocus(cam);
+        if (!done) planeFocus(cam && cam.why ? cam.why : (state.cfgs0 && state.cfgs0.length > 1 ? '插删过面，和文件的结构对不上' : null));
+      } finally {
+        btn.textContent = label; btn.disabled = false;
+        schedule(0);
       }
-      $('defoc').value = (+best.toFixed(4));
-      btn.textContent = label; btn.disabled = false;
-      schedule(0);
     }, 30);
   });
 
