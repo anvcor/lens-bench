@@ -1566,6 +1566,9 @@ var OPT = (function () {
       draw[dn] = Math.min(draw[dn], lo);
     }
 
+    /* 轮廓折线允许偏离真实面型多少（mm）。Layout 最多放大 40×：整图宽约等于 zImg − zEnter 再加两边留白，
+       面板再宽也就 1600 px 上下，40× 时 1 mm 顶多 40·1600/span 像素；取 4e-6·span，最大放大下偏差仍 < 0.3 px。 */
+    var tolP = Math.max(4e-6 * Math.max(sys.zImg - zEnter, 1), 1e-6);
     var elems = [];
     for (var i2 = 0; i2 < S.length; i2++) {
       if (!S[i2].isGlass || i2 + 1 >= S.length) continue;
@@ -1573,7 +1576,7 @@ var OPT = (function () {
       var sdB = draw[i2 + 1];
       var sd = Math.max(sdA, sdB);
       elems.push({
-        front: profile(S[i2], zv[i2], sdA, sd), back: profile(S[i2 + 1], zv[i2 + 1], sdB, sd), sd: sd,
+        front: profile(S[i2], zv[i2], sdA, sd, tolP), back: profile(S[i2 + 1], zv[i2 + 1], sdB, sd, tolP), sd: sd,
         cemented: i2 > 0 && S[i2 - 1].isGlass
       });
     }
@@ -1586,15 +1589,48 @@ var OPT = (function () {
     for (var f = 0.999; f > 0.5; f -= 0.02) { z = sag(s, r * r * f * f); if (isFinite(z)) return z; }
     return 0;
   }
-  /* 面型轮廓：自身通光内按矢高，超出部分按机械边缘平切（同光学制图习惯） */
-  function profile(s, z0, ownSd, drawSd) {
-    var pts = [], N = 41, lim = Math.min(ownSd, drawSd), flat = drawSd > lim + 1e-9;
-    var zEdge = z0 + safeSag(s, lim);
-    if (flat) pts.push([zEdge, -drawSd]);
-    for (var i = 0; i <= N; i++) {
-      var r = -lim + 2 * lim * i / N;
-      pts.push([z0 + safeSag(s, r), r]);
+  /* 面型轮廓：自身通光内按矢高，超出部分按机械边缘平切（同光学制图习惯）。
+     采样：半边先均分 20 段（和原来整面 41 点同密度），再逐段细分，直到折线离真实面型不超过 tol mm——
+     Layout 能放大到 40×，均分的折线在强弯面边缘会差出几十像素，看得出一节节的折角。
+     每段查 1/4、1/2、3/4 三处（只查中点会漏掉拐点两侧对称鼓出的 S 形段）。
+     面型对 r 偶对称：只算 r ≥ 0 这一半再镜像，上下两半逐点一致。 */
+  function profile(s, z0, ownSd, drawSd, tol) {
+    var lim = Math.min(ownSd, drawSd);
+    /* 画图半径超过了面型本身的定义域（球面 r > |R|，或圆锥根号下变负）：只在有效段上采样，
+       再往外按机械边缘平切。safeSag 在定义域外是按 0.999 / 0.979 / … 倍缩半径回退的锯齿，
+       自适应细分会把每一个齿都细细画出来（改小曲率半径而画图半孔径不变时就会碰到）。
+       定义域是 [0, r*] 一整段（只有圆锥那个根号会出 NaN），二分找 r* 即可。 */
+    if (!isFinite(sag(s, lim * lim))) {
+      var okR = 0, badR = lim;
+      for (var b = 0; b < 48; b++) { var mR = (okR + badR) / 2; if (isFinite(sag(s, mR * mR))) okR = mR; else badR = mR; }
+      lim = okR;
     }
+    var flat = drawSd > lim + 1e-9;
+    var zEdge = z0 + safeSag(s, lim);
+    if (!(tol > 0)) tol = 1e-3;
+    var N0 = 20, MAXD = 9, half = [[0, safeSag(s, 0)]];
+    function dev(ra, za, rb, zb, r, z) {                   // (r,z) 到弦的垂直距离
+      var dr = rb - ra, dz = zb - za, len = Math.sqrt(dr * dr + dz * dz);
+      return len > 0 ? Math.abs((z - za) * dr - (r - ra) * dz) / len : 0;
+    }
+    function seg(ra, za, rb, zb, d) {
+      var rm = (ra + rb) / 2, zm = safeSag(s, rm);
+      if (d < MAXD) {
+        var r1 = (ra + rm) / 2, r3 = (rm + rb) / 2;
+        var e = Math.max(dev(ra, za, rb, zb, rm, zm),
+                         dev(ra, za, rb, zb, r1, safeSag(s, r1)), dev(ra, za, rb, zb, r3, safeSag(s, r3)));
+        if (e > tol) { seg(ra, za, rm, zm, d + 1); seg(rm, zm, rb, zb, d + 1); return; }
+      }
+      half.push([rb, zb]);
+    }
+    for (var i = 1; i <= N0; i++) {
+      var ra = lim * (i - 1) / N0, rb = lim * i / N0;
+      seg(ra, half[half.length - 1][1], rb, safeSag(s, rb), 0);
+    }
+    var pts = [];
+    if (flat) pts.push([zEdge, -drawSd]);
+    for (var j = half.length - 1; j > 0; j--) pts.push([z0 + half[j][1], -half[j][0]]);
+    for (j = 0; j < half.length; j++) pts.push([z0 + half[j][1], half[j][0]]);
     if (flat) pts.push([zEdge, drawSd]);
     return pts;
   }

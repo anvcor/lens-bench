@@ -68,11 +68,14 @@
     }).then(function (L) { LENSCACHE[id] = L; cb(null, L); })
       .catch(function (err) { cb(err); });
   }
+  var lensPending = false;                     // 静态站：镜头 JSON 还在下载
   function loadLens(id, done) {
     var sel = $('ex'), old = sel.options[sel.selectedIndex];
     var busy = !(LENSCACHE[id] || LENSDB.inline[id]);
     if (busy && old) old.textContent = old.textContent.replace(/ · 载入中…$/, '') + ' · 载入中…';
+    lensPending = busy;
     getLens(id, function (err, L) {
+      lensPending = false;
       if (old) old.textContent = old.textContent.replace(/ · 载入中…$/, '');
       if (err) {
         showMsgs(['载入镜头 ' + id + ' 失败：' + err.message +
@@ -80,6 +83,7 @@
         if (done) done(err); return;
       }
       CURORIGIN = idxEntry(id);
+      state.libId = id; state.imp = false; IMPREC = null;
       applyLens(L);
       if (busy) { histBase(); schedule(0); }
       if (done) done(null, L);
@@ -110,7 +114,8 @@
   var DASH = ['', '5 2.5', '1.6 2.4', '8 2.5 1.6 2.5', '11 3', '2 2 7 2'];
 
   var state = { rows: [], stop: 0, sel: 0, wl: wlSet('p5'), pri: 1,
-                cfgs: null, cfg: 0, vigH: null, sdDraw: null, sdAp: null, vigAuto: null, cfgs0: null, T0: null };
+                cfgs: null, cfg: 0, vigH: null, sdDraw: null, sdAp: null, vigAuto: null, cfgs0: null, T0: null, libId: null, imp: false };
+  // libId = 当前处方来自镜头库的哪颗（导入的文件 / 旧链接认不出时为 null）；imp = 当前是导入的文件（记录在 sessionStorage）
   // cfgs0 / T0 = 载入时文件原样的多重结构和各面厚度，只给「最佳对焦」认对焦凸轮用（界面改动会写回 cfgs）
   // cfgs = 多重结构；vigH = 渐晕表对应的像高列表；sdDraw = 画图半口径；
   // sdAp = 真实通光（只含写死的 CIR / 固定 DIAM / FLAP，「一键渐晕」按它判）；
@@ -544,7 +549,6 @@
                     return st.fmode === 'height' ? OPT.angleForHeight(sys, st.fov * fr, lamA) : st.fov * fr;
                   }),
                   vuy: vAuto.vuy, vly: vAuto.vly, vux: vAuto.vux, vlx: vAuto.vlx, auto: 1 };
-      if (vAuto.note) msgs.push(vAuto.note);
       // 渐晕表的归一化瞳坐标分「瞄准」和「不瞄准」两套，不能混用
       if (vAuto.aim !== undefined && !!vAuto.aim !== !!st.aim)
         msgs.push('当前的光线瞄准设置（' + (st.aim ? '开' : '关') + '）和这张渐晕表算出来时（'
@@ -573,17 +577,6 @@
     // 像面是不是就落在轴上焦点处？（近轴细光线与光轴的交点 vs 当前像面）
     // 只取决于曲率 / 厚度 / 折射率，与孔径、非球面高次项无关，所以能直接判断
     // 「文件里的后焦距对不对」。写死的镜头和正常的 .zmx 都在 1 波以内，超过就提示。
-    (function () {
-      var lam0 = opt.lambdas[opt.primary].nm / 1000;
-      var dz = axialBestFocus(sys, opt);
-      if (dz === null) return;
-      var w = Math.abs(dz) / (8 * sys.fno * sys.fno * lam0 / 1000);
-      if (w > 2) msgs.push('像面不在轴上最佳焦点上：最佳焦点在像面' + (dz > 0 ? '后' : '前') + ' '
-        + Math.abs(dz).toFixed(4) + ' mm（相当于 ' + w.toFixed(1) + ' 波离焦，F/' + sys.fno.toFixed(2)
-        + ' @ ' + opt.lambdas[opt.primary].nm + ' nm），MTF 会整体塌下来。'
-        + '这是曲率 / 厚度 / 折射率直接决定的，跟孔径和非球面无关——多半是文件里最后一段空气间隔被取整了，'
-        + '或者原文件在这一面上挂了个「边缘光线高度 = 0」的解而导出时没带出来。按「最佳对焦」即可补上。');
-    })();
 
     var t0 = performance.now();
     var mtf = OPT.mtfVsField(sys, opt);
@@ -592,16 +585,7 @@
     var fan = OPT.rayFan(sys, opt);
     var dt = performance.now() - t0;
 
-    var edge = mtf.rows[mtf.rows.length - 1];
-    if (mtf.rows.some(function (r) { return r.thru < 0.999; })) {
-      msgs.push(mtf.mode === 'diff'
-        ? '半孔径引起渐晕：边缘视场等效通光瞳面积仅剩 ' + (edge.thru * 100).toFixed(0) +
-          '%（各视场见数据表「通光率」）。衍射 MTF 按该视场的等效椭圆瞳计算，截止频率随瞳半宽同比下降。'
-        : (p.surfaces.some(function (s) { return s.sd; })
-          ? '半孔径引起渐晕：边缘视场通光率 ' + (edge.thru * 100).toFixed(0) + '%（各视场见 MTF 数据表）。MTF 按实际通过的光线计算。'
-          : '部分视场有光线丢失（面外或全反射），该处 MTF 已按剩余光线计算。'));
-    }
-
+    // 渐晕本身不是问题，边缘通光率在信息卡和数据表里都有，不再刷提示
     if (mtf.mode === 'diff') {
       var pvm = 0; mtf.rows.forEach(function (r) { pvm = Math.max(pvm, r.wpv || 0); });
       if (st.ngrid < 32)
@@ -615,6 +599,7 @@
     showMsgs(msgs);
     $('surfBadge').textContent = p.surfaces.length + ' 面 · ' + p.surfaces.filter(function (s) { return s.isGlass; }).length + ' 片';
     renderStatus();
+    renderSpec();
     renderLayout();
     renderMTF();
     renderAber();
@@ -623,7 +608,7 @@
     $('perfBadge').textContent = (mtf.mode === 'diff' ? '衍射 · ' : '几何 · ') + mtf.rays.toLocaleString('en-US') + ' 条' + (mtf.aiming ? '（瞄准）' : '') + ' · ' + dt.toFixed(0) + ' ms';
     $('stPerf').textContent = '追迹 ' + mtf.rays.toLocaleString('en-US') + ' 条 · ' + dt.toFixed(0) + ' ms · JS 单线程';
     syncVigBtn();
-    writeHash(st);
+    writeHash(hashState(st));
   }
 
   function showMsgs(list) {
@@ -652,6 +637,57 @@
     var lastRow = rows.length ? rows[rows.length - 1] : null;
     $('stImg').textContent = fmt(lastRow ? (lastRow.imgHc || lastRow.imgH) : 0, 4);
     $('stRms').textContent = fmt(rows.length ? rows[0].rms : 0, 2) + ' µm';
+  }
+
+  /* ================= 镜头信息卡 =================
+     上半「标称」来自进度表（index 条目的 spec，tools/specs_import.py 写的），载入镜头时定下来不变；
+     下半「本页」每次重算都刷：一阶量 + 几个粗略的性能数，够一眼看出这颗镜头大概什么水平。
+     两半故意并排放：标称焦距 85 / 算出来 84.2、标称 F1.4 / 算出来 F1.46，这种差别就是数据和产品的差别。 */
+  function patentUrl(pn) {
+    var q = String(pn).replace(/[\s\/\-]/g, '');
+    return 'https://patents.google.com/?q=' + encodeURIComponent('(' + q + ')') + '&oq=' + encodeURIComponent(q);
+  }
+  function specTile(k, v, title) {
+    return '<span class="it"' + (title ? ' title="' + esc(title) + '"' : '') + '><span class="k">' + k + '</span><span class="v">' + v + '</span></span>';
+  }
+  function renderSpec() {
+    var box = $('lensSpec');
+    if (!last) { box.hidden = true; return; }
+    var sp = CURORIGIN && CURORIGIN.spec, h = [];
+    if (sp) {
+      h.push('<span class="hd">标称 · 进度表</span>');
+      if (sp.patent) h.push(specTile('专利号', '<a href="' + patentUrl(sp.patent) + '" target="_blank" rel="noopener">' + esc(sp.patent) + '</a>', '在 Google Patents 检索这个号'));
+      else h.push(specTile('专利号', '<i>表里没填</i>'));
+      if (sp.model) h.push(specTile('型号代码', esc(sp.model)));
+      var mt = [sp.mount, sp.format, sp.type].filter(Boolean).join(' · ');
+      if (mt) h.push(specTile('卡口 · 画幅 · 类型', esc(mt)));
+      if (sp.focal || sp.aperture) h.push(specTile('标称焦距 · 光圈', esc([sp.focal ? sp.focal + ' mm' : '', sp.aperture || ''].filter(Boolean).join(' · '))));
+      if (sp.year || sp.status) h.push(specTile('发售', esc([sp.year, sp.status].filter(Boolean).join(' · '))));
+    }
+    var s2 = last.sys, rows = last.mtf.rows, N = s2.surfaces.length, freqs = last.opt.freqs || [];
+    var oal = s2.zVertex[N - 1], nGlass = s2.surfaces.filter(function (q) { return q.isGlass; }).length;
+    var r0 = rows[0], rN = rows[rows.length - 1];
+    h.push('<span class="hd">本页 · 按当前状态算</span>');
+    h.push(specTile('焦距 · F/#', fmt(s2.efl, 2) + ' mm · F/' + fmt(s2.fno, 2), '主波长近轴焦距；F/# 按顶栏「孔径定义」'));
+    h.push(specTile('总长 · 后截距', fmt(oal, 2) + ' <i>+</i> ' + fmt(s2.bfl, 2) + ' <i>= ' + fmt(oal + s2.bfl, 2) + '</i>', '第 1 面顶点到末面顶点 + 末面到像面 = 首面到像面'));
+    h.push(specTile('入瞳 · 最大像高', 'φ' + fmt(s2.epd, 2) + ' · ' + fmt(rN ? (rN.imgHc || rN.imgH) : 0, 2), '入瞳直径 / 最大视场的主光线像高'));
+    h.push(specTile('片数 · 面数 · 结构', nGlass + ' · ' + N + ' · ' + (state.cfgs ? state.cfgs.length : 1)));
+    if (r0 && rN) {
+      h.push(specTile('轴上 · 边缘 RMS', fmt(r0.rms, 1) + ' <i>/</i> ' + fmt(rN.rms, 1) + ' µm', '主波长几何弥散斑 RMS 半径'));
+      var mt2 = [];
+      for (var qi = 0; qi < Math.min(2, freqs.length); qi++)
+        mt2.push(freqs[qi] + ': ' + fmt(r0.T[qi], 2) + ' <i>/</i> ' + fmt(rN.T[qi], 2) + '<i>T</i> ' + fmt(rN.S[qi], 2) + '<i>S</i>');
+      if (mt2.length) h.push(specTile('MTF 中心 / 边缘', mt2.join(' &nbsp; '), '按频率 cyc/mm：中心 T / 边缘 T · S（' + (last.mtf.mode === 'diff' ? '衍射' : '几何') + '）'));
+      if (rN.thru != null) h.push(specTile('边缘通光率', fmt(rN.thru * 100, 0) + '%', '最大视场的等效通光瞳面积占比（渐晕）'));
+    }
+    var A = last.aber, pri = last.opt.primary;
+    if (A && A.dist && A.dist[pri]) {
+      var dmax = 0, dh = 0;
+      A.dist[pri].pts.forEach(function (q) { if (Math.abs(q[0]) > Math.abs(dmax)) { dmax = q[0]; dh = q[1]; } });
+      h.push(specTile('最大畸变', fmt(dmax, 2) + '% <i>@' + fmt(dh, 1) + ' mm</i>'));
+    }
+    box.innerHTML = h.join('');
+    box.hidden = false;
   }
 
   /* ================= Layout ================= */
@@ -684,26 +720,39 @@
     var xoff = (PX - W * scale) / 2;
     var X = function (z) { return xoff + (z - minZ + padZ) * scale; };
     var Y = function (y) { return PY / 2 - y * scale; };
+    var P = function (z, y) { return X(z).toFixed(3) + ' ' + Y(y).toFixed(3); };
+    /* 线宽、虚线、标注都按「屏幕上的像素」定：data-sw / data-da / data-tx 记下倍率 1 时的值，
+       Layout 放大时 layApply 按倍率反除（见 layMarks），放大只让几何变大，线条和字不跟着变粗变大。 */
+    var sw = function (w) { return ' stroke-width="' + w + '" data-sw="' + w + '"'; };
+    var dash = function (da) { return da ? ' stroke-dasharray="' + da + '" data-da="' + da + '"' : ''; };
+    var label = function (ax, ay, dx, dy, anchor, text) {
+      return '<g data-tx="' + ax.toFixed(3) + '" data-ty="' + ay.toFixed(3) + '" transform="translate(' + ax.toFixed(3) + ' ' + ay.toFixed(3) + ')">' +
+        '<text x="' + dx + '" y="' + dy + '" fill="' + ink2 + '" font-size="10.5" text-anchor="' + anchor +
+        '" font-family="IBM Plex Mono, monospace">' + text + '</text></g>';
+    };
     var g = [];
 
-    g.push('<line x1="' + xoff.toFixed(1) + '" y1="' + Y(0) + '" x2="' + (PX - xoff).toFixed(1) + '" y2="' + Y(0) +
-      '" stroke="' + ink3 + '" stroke-width="1" stroke-dasharray="7 4" opacity=".5"/>');
+    g.push('<line x1="' + xoff.toFixed(3) + '" y1="' + Y(0) + '" x2="' + (PX - xoff).toFixed(3) + '" y2="' + Y(0) +
+      '" stroke="' + ink3 + '"' + sw(1) + dash('7 4') + ' opacity=".5"/>');
 
+    g.push('<g stroke="' + gstroke + '"' + sw(1.15) + ' stroke-linejoin="round">');
     L.elements.forEach(function (e) {
-      var d = 'M' + e.front.map(function (p) { return X(p[0]).toFixed(2) + ' ' + Y(p[1]).toFixed(2); }).join(' L') +
-        ' L' + e.back.slice().reverse().map(function (p) { return X(p[0]).toFixed(2) + ' ' + Y(p[1]).toFixed(2); }).join(' L') + ' Z';
-      g.push('<path d="' + d + '" fill="' + (e.cemented ? glass2 : glass) + '" fill-opacity=".9" stroke="' +
-        gstroke + '" stroke-width="1.15" stroke-linejoin="round"/>');
+      var d = 'M' + e.front.map(function (p) { return P(p[0], p[1]); }).join(' L') +
+        ' L' + e.back.slice().reverse().map(function (p) { return P(p[0], p[1]); }).join(' L') + ' Z';
+      g.push('<path d="' + d + '" fill="' + (e.cemented ? glass2 : glass) + '" fill-opacity=".9"/>');
     });
+    g.push('</g>');
 
     var byW = L.byWvl, wlCols = C.wlCols || [];
     L.bundles.forEach(function (b) {
       var c = byW ? (wlCols[b.wi] || fieldCols[0]) : (fieldCols[b.fi] || fieldCols[fieldCols.length - 1]);
       var da = byW ? DASH[b.wi % DASH.length] : '';
+      // stroke-opacity 放在组上逐条继承，和原来每条 opacity 的叠加效果一样（组级 opacity 会把整束当一张图层合成）
+      g.push('<g fill="none" stroke="' + c + '"' + sw(1.05) + ' stroke-opacity=".92"' + dash(da) + '>');
       b.rays.forEach(function (r) {
-        g.push('<path d="' + r.map(function (p, j) { return (j ? 'L' : 'M') + X(p[0]).toFixed(2) + ' ' + Y(p[1]).toFixed(2); }).join(' ') +
-          '" fill="none" stroke="' + c + '" stroke-width="1.05" opacity=".92"' + (da ? ' stroke-dasharray="' + da + '"' : '') + '/>');
+        g.push('<path d="' + r.map(function (p, j) { return (j ? 'L' : 'M') + P(p[0], p[1]); }).join(' ') + '"/>');
       });
+      g.push('</g>');
     });
 
     var si = C.opt.stopIdx, zs = s.zVertex[si];
@@ -713,10 +762,9 @@
       // 实际边缘光线因为光瞳球差会落得更高（85 GM II 的 1.6m 结构：光线到 17.09，sdStop 只有 16.59），
       // 于是光线从刻线中间穿过去，看着像和光阑打架。
       var hs = (L.drawSd && L.drawSd[si]) || s.surfaces[si].sd || L.sdStop || Math.max(L.maxR[si] * 1.06, s.epd / 2);
-      g.push('<line x1="' + X(zs) + '" y1="' + Y(hs) + '" x2="' + X(zs) + '" y2="' + Y(hs * 1.4 + 0.5) + '" stroke="' + inkC + '" stroke-width="2"/>');
-      g.push('<line x1="' + X(zs) + '" y1="' + Y(-hs) + '" x2="' + X(zs) + '" y2="' + Y(-hs * 1.4 - 0.5) + '" stroke="' + inkC + '" stroke-width="2"/>');
-      g.push('<text x="' + X(zs) + '" y="' + (Y(hs * 1.4 + 0.5) - 5) + '" fill="' + ink2 +
-        '" font-size="10.5" text-anchor="middle" font-family="IBM Plex Mono, monospace">光阑</text>');
+      g.push('<line x1="' + X(zs) + '" y1="' + Y(hs) + '" x2="' + X(zs) + '" y2="' + Y(hs * 1.4 + 0.5) + '" stroke="' + inkC + '"' + sw(2) + '/>');
+      g.push('<line x1="' + X(zs) + '" y1="' + Y(-hs) + '" x2="' + X(zs) + '" y2="' + Y(-hs * 1.4 - 0.5) + '" stroke="' + inkC + '"' + sw(2) + '/>');
+      g.push(label(X(zs), Y(hs * 1.4 + 0.5), 0, -5, 'middle', '光阑'));
     }
 
     // 像面线高度 = 最大视场的实像高，和光线落点齐平
@@ -729,9 +777,8 @@
       });
     });
     var ih = maxH > 1e-6 ? maxH : maxY * 0.2;
-    g.push('<line x1="' + X(s.zImg) + '" y1="' + Y(ih) + '" x2="' + X(s.zImg) + '" y2="' + Y(-ih) + '" stroke="' + inkC + '" stroke-width="2"/>');
-    g.push('<text x="' + (X(s.zImg) - 5) + '" y="' + (Y(ih) - 5) + '" fill="' + ink2 +
-      '" font-size="10.5" text-anchor="end" font-family="IBM Plex Mono, monospace">像面</text>');
+    g.push('<line x1="' + X(s.zImg) + '" y1="' + Y(ih) + '" x2="' + X(s.zImg) + '" y2="' + Y(-ih) + '" stroke="' + inkC + '"' + sw(2) + '/>');
+    g.push(label(X(s.zImg), Y(ih), -5, -5, 'end', '像面'));
 
     svg.setAttribute('viewBox', '0 0 ' + PX.toFixed(0) + ' ' + PY.toFixed(0));
     svg.setAttribute('preserveAspectRatio', 'xMidYMid meet');
@@ -764,7 +811,9 @@
   }
 
   /* ================= Layout 缩放 / 平移 / 复制图片 =================
-     只改 viewBox，不碰画出来的元素：线宽、字号都跟着一起放大，和 Zemax 里放大 Layout 的观感一致。
+     缩放改的是 viewBox：几何按矢量重新栅格化，镜片轮廓按 40× 下 < 0.3 px 的精度采样（optics.js 的 profile），
+     放大后仍是光滑曲线。线宽、虚线节距、「光阑 / 像面」标注按倍率反除（layMarks），始终是屏幕上的
+     原始粗细和字号——只改 viewBox 的话 3× 时光线就有 3 px 粗、标注 30 px 高，看着糊。
      状态存成「视窗中心在整图里的比例 + 倍率」，每次重算重绘（换镜头、改参数、窗口变宽）之后
      按比例还原，所以放大着改一个曲率半径，视窗不会跳回整图。倍率 1 就是整图，此时不能平移。 */
   var LAYZ = { W: 0, H: 0, cx: 0.5, cy: 0.5, zoom: 1, drag: null };
@@ -779,9 +828,27 @@
     // 视窗中心夹在整图范围内，放大后不能把图整个拖出视野
     var cx = Math.min(Math.max(LAYZ.cx * LAYZ.W, w / 2), LAYZ.W - w / 2), cy = Math.min(Math.max(LAYZ.cy * LAYZ.H, h / 2), LAYZ.H - h / 2);
     LAYZ.cx = cx / LAYZ.W; LAYZ.cy = cy / LAYZ.H;
-    svg.setAttribute('viewBox', (cx - w / 2).toFixed(2) + ' ' + (cy - h / 2).toFixed(2) + ' ' + w.toFixed(2) + ' ' + h.toFixed(2));
+    svg.setAttribute('viewBox', (cx - w / 2).toFixed(4) + ' ' + (cy - h / 2).toFixed(4) + ' ' + w.toFixed(4) + ' ' + h.toFixed(4));
     svg.classList.toggle('zoomed', LAYZ.zoom > 1);
     $('layZoomLbl').textContent = LAYZ.zoom.toFixed(1) + '×';
+    layMarks(svg, LAYZ.zoom);
+  }
+  /* 线宽 / 虚线 / 标注换算回屏幕像素：drawLayout 把倍率 1 时的值记在 data-sw / data-da / data-tx·ty 上。
+     元素不多（线宽和虚线挂在组上，光线逐条继承），滚轮每一格都重设一遍也只是几十个属性 */
+  function layMarks(svg, z) {
+    var k = 1 / z, i, el, list;
+    list = svg.querySelectorAll('[data-sw]');
+    for (i = 0; i < list.length; i++) { el = list[i]; el.setAttribute('stroke-width', +(el.getAttribute('data-sw') * k).toPrecision(6)); }
+    list = svg.querySelectorAll('[data-da]');
+    for (i = 0; i < list.length; i++) {
+      el = list[i];
+      el.setAttribute('stroke-dasharray', el.getAttribute('data-da').split(/[\s,]+/).map(function (v) { return +(v * k).toPrecision(6); }).join(' '));
+    }
+    list = svg.querySelectorAll('[data-tx]');
+    for (i = 0; i < list.length; i++) {
+      el = list[i];
+      el.setAttribute('transform', 'translate(' + el.getAttribute('data-tx') + ' ' + el.getAttribute('data-ty') + ')' + (z === 1 ? '' : ' scale(' + +k.toPrecision(6) + ')'));
+    }
   }
   /* 屏幕坐标 → viewBox 坐标（CTM 里已含 meet 的留白偏移，直接用它最准） */
   function layPt(svg, ev) {
@@ -829,53 +896,217 @@
     $('layZoomReset').addEventListener('click', function () { LAYZ.zoom = 1; layApply(); });
   })();
 
-  /* 把 SVG 当前视图渲染成 PNG（2× 分辨率，底色用面板色，否则透明底贴到深色软件里看不见）。
-     字体：SVG 经 <img> 转位图时拿不到网页字体，标注会退回系统等宽字体，线条颜色都是内联属性、不受影响。 */
-  function svgToPngBlob(svg, scale) {
-    return new Promise(function (resolve, reject) {
-      var vb = svg.viewBox.baseVal, W = Math.round(vb.width * scale), H = Math.round(vb.height * scale);
-      var clone = svg.cloneNode(true);
-      clone.setAttribute('xmlns', 'http://www.w3.org/2000/svg');
-      clone.setAttribute('width', W); clone.setAttribute('height', H);
-      var url = URL.createObjectURL(new Blob([new XMLSerializer().serializeToString(clone)], { type: 'image/svg+xml;charset=utf-8' }));
-      var img = new Image();
-      img.onload = function () {
-        var c = document.createElement('canvas'); c.width = W; c.height = H;
-        var ctx = c.getContext('2d');
-        ctx.fillStyle = css('--panel'); ctx.fillRect(0, 0, W, H);
-        ctx.drawImage(img, 0, 0, W, H);
-        URL.revokeObjectURL(url);
-        c.toBlob(function (b) { b ? resolve(b) : reject(new Error('toBlob 失败')); }, 'image/png');
+  /* ================= 复制图片（各图卡通用） =================
+     按屏幕上的实际排版，把一张卡里的图连同图例、标注逐个元素画进一张 PNG（屏幕尺寸 × scale）：
+       · svg → 序列化成图片贴上，按 scale 倍的像素栅格化；Layout 放大时线宽 / 标注已由 layMarks 换算过，
+         出图里的粗细字号和屏幕上一样，视窗也就是当前缩放的那一块；
+       · canvas（Spot 的光斑格）→ 直接贴；
+       · 文字 → canvas fillText，字体取元素算出来的样式（网页已载入的字体 canvas 也能用，图例和屏幕上一模一样）；
+       · 有底色 / 边框的元素（图例色块、波长虚线色块、Spot 格子的黑底、对比页状态栏的分隔线）→ 画矩形 / 线。
+     根节点只挑图、图例、状态栏，表单控件和按钮不在里面；万一碰到也跳过。
+     svg 里的字（坐标刻度、「光阑」标注）不跟着 svg 转位图——<img> 里的 svg 拿不到网页字体，会退回系统字体；
+     改为从图上摘掉，再按每个 <text> 在屏幕上的变换矩阵（getScreenCTM，含 viewBox 缩放、旋转、Layout 标注的反缩放）
+     用 canvas 原样写回去，字体、字号、描边衬底都和屏幕一致。
+     底色用面板色，否则透明底贴到深色软件里看不见。 */
+  function snapPng(roots, caption, scale) {
+    scale = scale || 2;
+    roots = roots.filter(function (el) { return el && el.getClientRects().length; });
+    if (!roots.length) return Promise.reject(new Error('卡片里还没有图'));
+    var L = 1e9, T = 1e9, R = -1e9, B = -1e9;
+    roots.forEach(function (el) {
+      var r = el.getBoundingClientRect();
+      L = Math.min(L, r.left); T = Math.min(T, r.top); R = Math.max(R, r.right); B = Math.max(B, r.bottom);
+    });
+    var pad = 12, capH = caption ? 24 : 0;
+    var W = Math.ceil(R - L + 2 * pad), H = Math.ceil(B - T + 2 * pad + capH);
+    var ox = L - pad, oy = T - pad - capH;                 // 画布原点对应的页面坐标
+    var ops = [], range = document.createRange();
+    var alpha = function (c) { var m = /rgba?\(([^)]+)\)/.exec(c || ''); if (!m) return c && c !== 'transparent' ? 1 : 0; var p = m[1].split(','); return p.length > 3 ? parseFloat(p[3]) : 1; };
+    var norm = function (s) { return s.replace(/\s+/g, ' '); };
+    function textOps(node, cs) {
+      var s = node.nodeValue, i0 = s.search(/\S/);
+      if (i0 < 0) return;
+      var i1 = s.length; while (i1 > i0 && /\s/.test(s.charAt(i1 - 1))) i1--;
+      var st = { font: cs.fontStyle + ' ' + cs.fontWeight + ' ' + cs.fontSize + ' ' + cs.fontFamily,
+                 col: cs.color, ls: cs.letterSpacing, up: cs.textTransform === 'uppercase' };
+      range.setStart(node, i0); range.setEnd(node, i1);
+      var rs = range.getClientRects();
+      if (rs.length <= 1) {
+        var r0 = rs[0] || range.getBoundingClientRect();
+        ops.push({ text: norm(s.slice(i0, i1)), x: r0.left, top: r0.top, h: r0.height, st: st });
+        return;
+      }
+      // 折行的文字：逐字取位置，按行分段各画各的
+      var cur = null;
+      for (var i = i0; i < i1; i++) {
+        range.setStart(node, i); range.setEnd(node, i + 1);
+        var cr = range.getClientRects()[0], ch = s.charAt(i);
+        if (!cr || !cr.width) continue;
+        if (!cur || Math.abs(cr.top - cur.top) > 1) {
+          if (/\s/.test(ch)) continue;                   // 行首空白不画，免得整行右移一格
+          cur = { text: '', x: cr.left, top: cr.top, h: cr.height, st: st }; ops.push(cur);
+        }
+        cur.text += ch;
+      }
+      ops.forEach(function (o) { if (o.st === st) o.text = norm(o.text).replace(/\s+$/, ''); });
+    }
+    function walk(el) {
+      if (el.nodeType !== 1 || !el.getClientRects().length) return;
+      var tag = el.tagName.toUpperCase();
+      if (tag === 'INPUT' || tag === 'SELECT' || tag === 'BUTTON' || tag === 'TEXTAREA') return;
+      var cs = getComputedStyle(el);
+      if (cs.display === 'none' || cs.visibility === 'hidden') return;
+      var r = el.getBoundingClientRect();
+      if (tag === 'SVG') {
+        var texts = [];
+        Array.prototype.forEach.call(el.querySelectorAll('text'), function (t) {
+          var tc = getComputedStyle(t), s2 = (t.textContent || '').trim(), m = t.getScreenCTM();
+          if (!s2 || !m || !t.getClientRects().length || tc.visibility === 'hidden' || tc.display === 'none') return;
+          var xs = t.x && t.x.baseVal, ys = t.y && t.y.baseVal;
+          texts.push({ s: s2, m: m, x: xs && xs.numberOfItems ? xs.getItem(0).value : 0, y: ys && ys.numberOfItems ? ys.getItem(0).value : 0,
+                       font: tc.fontStyle + ' ' + tc.fontWeight + ' ' + tc.fontSize + ' ' + tc.fontFamily,
+                       fill: tc.fill, stroke: tc.stroke, sw: parseFloat(tc.strokeWidth) || 0, halo: /^stroke/.test(tc.paintOrder || ''),
+                       a: (parseFloat(tc.opacity) || 1) * (tc.fillOpacity === '' ? 1 : parseFloat(tc.fillOpacity)),
+                       anchor: tc.textAnchor === 'middle' ? 'center' : tc.textAnchor === 'end' ? 'right' : 'left' });
+        });
+        ops.push({ svg: el, r: r, texts: texts });
+        return;
+      }
+      if (tag === 'CANVAS') { ops.push({ canvas: el, r: r }); return; }
+      if (alpha(cs.backgroundColor) > 0) ops.push({ fill: cs.backgroundColor, r: r, rad: parseFloat(cs.borderTopLeftRadius) || 0 });
+      ['Top', 'Right', 'Bottom', 'Left'].forEach(function (sd) {
+        var w = parseFloat(cs['border' + sd + 'Width']), bs = cs['border' + sd + 'Style'], bc = cs['border' + sd + 'Color'];
+        if (w > 0 && bs !== 'none' && bs !== 'hidden' && alpha(bc) > 0)
+          ops.push({ border: sd, r: r, w: w, col: bc, dash: bs === 'dashed' ? [w * 2, w * 1.4] : bs === 'dotted' ? [w, w] : null });
+      });
+      for (var n = el.firstChild; n; n = n.nextSibling) {
+        if (n.nodeType === 3) textOps(n, cs); else walk(n);
+      }
+    }
+    roots.forEach(walk);
+    // svg 先各自转成图片（异步），再按文档顺序一次画完，前后遮挡关系和屏幕上一致
+    var loads = ops.filter(function (o) { return o.svg; }).map(function (o) {
+      return new Promise(function (res, rej) {
+        var clone = o.svg.cloneNode(true);
+        Array.prototype.forEach.call(clone.querySelectorAll('text'), function (t) { t.parentNode.removeChild(t); });   // 字由 canvas 写
+        clone.setAttribute('xmlns', 'http://www.w3.org/2000/svg');
+        clone.setAttribute('width', Math.max(1, Math.round(o.r.width * scale)));
+        clone.setAttribute('height', Math.max(1, Math.round(o.r.height * scale)));
+        var url = URL.createObjectURL(new Blob([new XMLSerializer().serializeToString(clone)], { type: 'image/svg+xml;charset=utf-8' }));
+        var img = new Image();
+        img.onload = function () { URL.revokeObjectURL(url); o.img = img; res(); };
+        img.onerror = function () { URL.revokeObjectURL(url); rej(new Error('SVG 转位图失败')); };
+        img.src = url;
+      });
+    });
+    return Promise.all(loads).then(function () {
+      var c = document.createElement('canvas'); c.width = Math.round(W * scale); c.height = Math.round(H * scale);
+      var ctx = c.getContext('2d');
+      ctx.scale(scale, scale);
+      ctx.fillStyle = css('--panel'); ctx.fillRect(0, 0, W, H);
+      var text = function (s, x, top, h, st) {
+        ctx.font = st.font; ctx.fillStyle = st.col; ctx.textBaseline = 'alphabetic';
+        if ('letterSpacing' in ctx) ctx.letterSpacing = (st.ls && st.ls !== 'normal') ? st.ls : '0px';
+        if (st.up) s = s.toUpperCase();
+        var m = ctx.measureText(s), a = m.fontBoundingBoxAscent, d = m.fontBoundingBoxDescent;
+        // 行框里文字的基线：内容区（上 + 下伸）在行框里垂直居中，基线在内容区顶 + 上伸处
+        var y = (a != null && d != null) ? top + (h - (a + d)) / 2 + a : top + h * 0.78;
+        ctx.fillText(s, x, y);
       };
-      img.onerror = function () { URL.revokeObjectURL(url); reject(new Error('SVG 转位图失败')); };
-      img.src = url;
+      if (caption) text(caption, pad, pad, 16, { font: '600 12.5px ' + getComputedStyle(document.body).fontFamily, col: css('--ink-2') });
+      ops.forEach(function (o) {
+        var r = o.r, x = r ? r.left - ox : o.x - ox, y = r ? r.top - oy : o.top - oy;
+        if (o.img) {
+          ctx.drawImage(o.img, x, y, r.width, r.height);
+          o.texts.forEach(function (t) {
+            ctx.save();
+            ctx.setTransform(scale * t.m.a, scale * t.m.b, scale * t.m.c, scale * t.m.d, scale * (t.m.e - ox), scale * (t.m.f - oy));
+            ctx.font = t.font; ctx.textAlign = t.anchor; ctx.textBaseline = 'alphabetic'; ctx.globalAlpha = t.a;
+            if ('letterSpacing' in ctx) ctx.letterSpacing = '0px';
+            if (t.halo && t.stroke && t.stroke !== 'none' && t.sw > 0) {
+              ctx.lineWidth = t.sw; ctx.strokeStyle = t.stroke; ctx.lineJoin = 'round'; ctx.strokeText(t.s, t.x, t.y);
+            }
+            if (t.fill && t.fill !== 'none') { ctx.fillStyle = t.fill; ctx.fillText(t.s, t.x, t.y); }
+            ctx.restore();
+          });
+        }
+        else if (o.canvas) { try { ctx.drawImage(o.canvas, x, y, r.width, r.height); } catch (e) { } }
+        else if (o.fill) {
+          ctx.fillStyle = o.fill; ctx.beginPath();
+          if (o.rad > 0 && ctx.roundRect) ctx.roundRect(x, y, r.width, r.height, Math.min(o.rad, r.width / 2, r.height / 2)); else ctx.rect(x, y, r.width, r.height);
+          ctx.fill();
+        } else if (o.border) {
+          ctx.strokeStyle = o.col; ctx.lineWidth = o.w; ctx.setLineDash(o.dash || []); ctx.beginPath();
+          var h2 = o.w / 2;
+          if (o.border === 'Top') { ctx.moveTo(x, y + h2); ctx.lineTo(x + r.width, y + h2); }
+          else if (o.border === 'Bottom') { ctx.moveTo(x, y + r.height - h2); ctx.lineTo(x + r.width, y + r.height - h2); }
+          else if (o.border === 'Left') { ctx.moveTo(x + h2, y); ctx.lineTo(x + h2, y + r.height); }
+          else { ctx.moveTo(x + r.width - h2, y); ctx.lineTo(x + r.width - h2, y + r.height); }
+          ctx.stroke(); ctx.setLineDash([]);
+        } else if (o.text) text(o.text, x, y, o.h, o.st);
+      });
+      return new Promise(function (res, rej) {
+        c.toBlob(function (b) { b ? res(b) : rej(new Error('toBlob 失败')); }, 'image/png');
+      });
     });
   }
   function flashBtn(btn, text, ok) {
-    var old = btn.textContent; btn.textContent = text; btn.classList.toggle('ok', !!ok);
-    setTimeout(function () { btn.textContent = old; btn.classList.remove('ok'); }, 1800);
+    var old = btn.dataset.label || btn.textContent;
+    btn.dataset.label = old;
+    btn.textContent = text; btn.classList.toggle('ok', !!ok);
+    clearTimeout(btn._ft);
+    btn._ft = setTimeout(function () { btn.textContent = old; btn.classList.remove('ok'); }, 1800);
   }
-  $('layCopy').addEventListener('click', function () {
-    var btn = this, svg = $('layout');
-    if (!svg.innerHTML) return;
-    var blobP = svgToPngBlob(svg, 2);
-    // ClipboardItem 接受 Promise<Blob>：write 必须在用户手势里同步调用，位图可以晚点到
-    var done = function () { flashBtn(btn, '已复制 ✓', true); };
-    var fallback = function (why) {
-      blobP.then(function (b) {
-        var a = document.createElement('a'); a.href = URL.createObjectURL(b);
-        a.download = 'layout-' + ($('ex').value || 'lens') + '.png'; a.click();
-        setTimeout(function () { URL.revokeObjectURL(a.href); }, 5000);
-        flashBtn(btn, '已下载 PNG', true);
-        PENDMSG.push('复制图片：剪贴板不可用（' + why + '），已改为下载 PNG。'); schedule(0);   // 提示要靠一次重算才刷出来
-      }, function (e) { flashBtn(btn, '失败'); PENDMSG.push('复制图片失败：' + e.message); schedule(0); });
-    };
-    if (navigator.clipboard && window.ClipboardItem) {
-      var item;
-      try { item = new ClipboardItem({ 'image/png': blobP }); }
-      catch (e) { fallback(e.message); return; }
-      navigator.clipboard.write([item]).then(done, function (e) { fallback(e && e.message ? e.message : '写入被拒绝'); });
-    } else fallback('浏览器不支持 ClipboardItem，或页面不在安全上下文');
+  /* 当前镜头的一行说明，写在图的左上角：换着镜头连续复制几张，贴出去也分得清哪张是哪颗 */
+  function lensCaption() {
+    var e = state.libId ? idxEntry(state.libId) : null;
+    var nm = e ? (e.brand ? e.brand + ' ' : '') + e.name + (e.origin ? '（' + e.origin + '）' : '')
+      : (state.imp && IMPREC ? (IMPREC.name || IMPREC.title || '导入的镜头') : '自定义处方');
+    var c = state.cfgs && state.cfgs[state.cfg];
+    return nm + (c ? ' · Z' + (state.cfg + 1) + ' ' + c.title : '');
+  }
+  function cmpCaption(k) {
+    var C = CMP[k], L = C.L, c = L && L.cfgs && L.cfgs[C.cfg];
+    return k + ' · ' + (C.brand ? C.brand + ' ' : '') + (C.name || '') + (C.entry && C.entry.origin ? '（' + C.entry.origin + '）' : '')
+      + (c ? ' · Z' + (C.cfg + 1) + ' ' + c.title : '');
+  }
+  /* 各卡片出图用哪几块、左上角写什么；ready() 为假时按钮只提示「还没有图」 */
+  var COPYSPEC = {
+    layout: { ids: ['layout', 'layoutLegend'], title: '2D Layout', main: true, ready: function () { return !!$('layout').innerHTML; } },
+    mtf: { ids: ['mtf', 'mtfLegend'], title: 'MTF vs 视场', main: true, ready: function () { return !!$('mtf').innerHTML; } },
+    aber: { ids: ['aber', 'aberLegend'], title: '球差 · 场曲/像散 · 畸变', main: true, ready: function () { return !!$('aber').innerHTML; } },
+    fan: { ids: ['fan', 'fanLegend'], title: '光线扇形', main: true, ready: function () { return !!$('fan').innerHTML; } },
+    spot: { ids: ['spotGrid', 'spotLegend'], title: 'Spot', main: true, ready: function () { return SPOT.hasImg; } },
+    cmpA: { ids: ['cmpLayA', 'cmpLayLegendA', 'cmpStatA'], cap: function () { return cmpCaption('A'); }, ready: function () { return !!CMP.A.res; } },
+    cmpB: { ids: ['cmpLayB', 'cmpLayLegendB', 'cmpStatB'], cap: function () { return cmpCaption('B'); }, ready: function () { return !!CMP.B.res; } },
+    cmpMtf: { ids: ['cmpMtf', 'cmpLegend'], cap: function () { return '双镜头对比 · MTF vs 视场'; }, ready: function () { return !!(CMP.A.res || CMP.B.res); } }
+  };
+  Array.prototype.forEach.call(document.querySelectorAll('[data-copy]'), function (btn) {
+    btn.addEventListener('click', function () {
+      var k = btn.getAttribute('data-copy'), sp = COPYSPEC[k];
+      if (!sp) return;
+      if (!sp.ready()) { flashBtn(btn, '还没有图'); return; }
+      var cap = sp.cap ? sp.cap() : sp.title + ' · ' + lensCaption();
+      var blobP = snapPng(sp.ids.map(function (id) { return $(id); }), cap, 2);
+      var note = function (m) { if (sp.main && !CMP.on) { PENDMSG.push(m); schedule(0); } };   // 提示要靠一次重算才刷出来；对比页上没有提示框
+      // ClipboardItem 接受 Promise<Blob>：write 必须在用户手势里同步调用，位图可以晚点到
+      var done = function () { flashBtn(btn, '已复制 ✓', true); };
+      var fallback = function (why) {
+        blobP.then(function (b) {
+          var a = document.createElement('a'); a.href = URL.createObjectURL(b);
+          a.download = k + '-' + ((sp.main ? state.libId : (CMP[k.slice(-1)] || CMP.A).id) || 'lens') + '.png'; a.click();
+          setTimeout(function () { URL.revokeObjectURL(a.href); }, 5000);
+          flashBtn(btn, '已下载 PNG', true);
+          note('复制图片：剪贴板不可用（' + why + '），已改为下载 PNG。');
+        }, function (e) { flashBtn(btn, '失败'); note('复制图片失败：' + e.message); });
+      };
+      if (navigator.clipboard && window.ClipboardItem) {
+        var item;
+        try { item = new ClipboardItem({ 'image/png': blobP }); }
+        catch (e) { fallback(e.message); return; }
+        navigator.clipboard.write([item]).then(done, function (e) { fallback(e && e.message ? e.message : '写入被拒绝'); });
+      } else fallback('浏览器不支持 ClipboardItem，或页面不在安全上下文');
+    });
   });
 
   function renderLayout() {
@@ -1260,6 +1491,256 @@
     if (!location.hash || location.hash.length < 4) return null;
     try { return JSON.parse(b64d(location.hash.slice(1))); } catch (e) { return null; }
   }
+  /* 每次重算都把状态写进地址栏的 #…，刷新或把链接发给别人都能还原。
+     以前（v1）只存处方文本和几个控件，刷新后镜头库那一层全丢——是哪颗镜头、多重结构、渐晕系数
+     （文件自带的和按通光预算的）、各面通光、物距——瞳按「不渐晕」算，边缘光线穿出镜片、MTF 虚高，
+     镜头下拉也是空的。v2 存「哪颗镜头 + 哪个结构 + 相对库里原样的改动」，恢复时先按 id 整颗载入再盖改动：
+       · tx 只在和库里原样（套上当前结构）不同时才存，没改过的镜头链接很短；
+       · sig 是库里这颗镜头面数据的指纹：镜头库更新过（比如重新录入）就不再拿旧处方盖新数据；
+       · sdDraw / sdAp 只在和库里不同（插删过面）时存；cd = 其它结构的厚度 / 曲率 / 物距改动，
+         vgz = 各结构的渐晕选择（0 = 换回了文件系数，对象 = 自己按「一键渐晕」算的），都只存和原样不同的；
+       · 导入的文件不在库里：整条记录放 sessionStorage（同一标签页刷新能完整还原），链接带 imp + 导入记录的指纹 isig，
+         差量逻辑和库里的镜头一样；指纹对不上（标签页后来又导入了别的文件）就不嫁接；
+       · 旧版链接（没有 v）：单文件版按「逐面曲率 + 玻璃一致」在库里认回是哪颗、哪个结构，认不出只还原处方。 */
+  var IMPKEY = 'lensbench.import';
+  // 改过名的镜头：旧链接里的旧 id → 现在的 id（数据相同，只是当初起错了名）
+  var IDALIAS = { 'sigma-500mm-f5-6-dg-dn-os-sports': 'sigma-500mm-f4-dg-os-hsm-sports' };
+  var IMPREC = null;                            // 当前导入文件的原样记录（和 sessionStorage 里那份一致）
+  /* 链接里的控件分两类：
+     LENSCTL 随镜头走（applyLens / applyCfg 会设），只在和「这颗镜头 + 当前结构」的默认值不同时才存——
+       库里数据更新了，没动过的控件自然跟着新数据走，旧值不会压上来；
+     VIEWCTL 是页面设置，和镜头无关，照存。 */
+  var LENSCTL = ['apmode', 'aim', 'fmode', 'fno', 'fov', 'freqs', 'objd', 'stop', 'defoc', 'wlRaw', 'pri'];
+  var VIEWCTL = ['mtfmode', 'colorby', 'ngrid', 'nfield', 'nviz', 'nfviz'];
+  function fnv(t) { var h = 0x811c9dc5; for (var i = 0; i < t.length; i++) { h ^= t.charCodeAt(i); h = Math.imul(h, 16777619); } return (h >>> 0).toString(36); }
+  function libSig(L) {
+    return fnv(L.tx + '|' + JSON.stringify((L.cfgs || []).map(function (c) { return [c.thi, c.rdy, c.obj]; })));
+  }
+  function libRec(id) { return id ? (LENSCACHE[id] || LENSDB.inline[id] || null) : null; }
+  function curRec() { return state.libId ? libRec(state.libId) : (state.imp ? IMPREC : null); }
+  function cfgRows(L, ci) {                     // 原样处方套上第 ci 个结构（和 applyLens + applyCfg 一致）
+    var rows = textToRows(L.tx), c = L.cfgs && L.cfgs[ci];
+    if (c) {
+      Object.keys(c.thi || {}).forEach(function (k) { if (rows[k]) rows[k].T = String(c.thi[k]); });
+      Object.keys(c.rdy || {}).forEach(function (k) { if (rows[k]) rows[k].R = (c.rdy[k] === 0 ? 'inf' : String(c.rdy[k])); });
+    }
+    return rows;
+  }
+  function same(a, b) { return JSON.stringify(a == null ? null : a) === JSON.stringify(b == null ? null : b); }
+  /* 这颗镜头套上第 ci 个结构时，applyLens + applyCfg 会给出的控件值（和 readState 的口径一致） */
+  function lensDefaults(L, ci) {
+    var c = L.cfgs && L.cfgs[ci], nr = textToRows(L.tx).length, D = {};
+    D.apmode = L.apmode || 'fno'; D.aim = !!L.aim; D.fmode = L.fmode || 'angle';
+    D.fno = (c && c.fno != null) ? +c.fno : +L.fno;
+    D.fov = +L.fov;
+    D.freqs = parseList(L.freqs || '10, 30, 80', [10, 30, 80]).filter(function (v) { return v > 0; }).slice(0, 4);
+    D.objd = c ? (c.obj == null ? Infinity : c.obj) : (L.objd != null ? L.objd : Infinity);
+    D.stop = Math.min(Math.max((L.stop || 1) - 1, 0), nr - 1) + 1;
+    D.defoc = 0;
+    if (L.wl && L.wl.length) {
+      D.wlRaw = L.wl.map(function (x) { return { nm: String(x[0]), w: String(x[1]), c: wlColor(x[0]) }; });
+      D.pri = Math.min(L.pri || 0, D.wlRaw.length - 1);
+    }
+    return D;
+  }
+  function ctlSame(k, a, b) {
+    if (b === undefined) return false;                          // 镜头没给这项默认值：照存
+    if (k === 'objd') return (!isFinite(a) && !isFinite(b)) || Math.abs(a - b) < 1e-9;
+    if (typeof b === 'number') return Math.abs(+a - b) <= 1e-9 * Math.max(1, Math.abs(b));
+    return same(a, b);
+  }
+  function hashState(st) {
+    var o = { v: 2 };
+    VIEWCTL.forEach(function (k) { o[k] = st[k]; });
+    var L = curRec();
+    if (!L) { LENSCTL.forEach(function (k) { o[k] = st[k]; }); o.tx = st.tx; return o; }
+    if (state.libId) { o.id = state.libId; o.sig = libSig(L); }
+    else { o.imp = 1; o.isig = libSig(L); }
+    o.cfg = state.cfg;
+    if (state.cfgs && state.cfgs[state.cfg]) o.ct = state.cfgs[state.cfg].title;   // 库更新后核对结构用
+    // 导入的文件：链接发到别处（或这个标签页又导入了别的文件）时拿不到原始记录，只能靠链接自己——
+    // 所以处方和镜头控件照全量存；库里的镜头随时能按 id 取回原样，只存差量。
+    var D = state.libId ? lensDefaults(L, state.cfg) : {};
+    LENSCTL.forEach(function (k) { if (!ctlSame(k, st[k], D[k])) o[k] = st[k]; });
+    if (!state.libId || st.tx !== rowsToText(cfgRows(L, state.cfg))) o.tx = st.tx;
+    if (!same(state.sdDraw, L.sdDraw)) o.sdDraw = state.sdDraw;
+    if (!same(state.sdAp, L.sdAp)) o.sdAp = state.sdAp;
+    // 其它结构的改动（厚度 / 曲率格子、物距、最佳对焦都会写回各自的结构）：只存和原样不同的项
+    var cd = {}, nd = 0;
+    (state.cfgs || []).forEach(function (c, ci) {
+      var c0 = L.cfgs && L.cfgs[ci]; if (!c0) return;
+      var moved = ['thi', 'rdy'].some(function (f) {
+        return Object.keys(c[f] || {}).sort().join() !== Object.keys(c0[f] || {}).sort().join();
+      });
+      if (moved) {                                               // 插删过面：面号整体挪了，按差量存对不上，整份存
+        cd[ci] = { full: 1, thi: c.thi || {}, rdy: c.rdy || {}, obj: c.obj }; nd++; return;
+      }
+      if (ci === state.cfg) return;                              // 当前结构的值由 tx + 物距表示
+      var d = {};
+      ['thi', 'rdy'].forEach(function (f) {
+        Object.keys(c[f] || {}).forEach(function (k) {
+          if (!ctlSame('x', +c[f][k], c0[f] && c0[f][k] != null ? +c0[f][k] : undefined)) (d[f] = d[f] || {})[k] = c[f][k];
+        });
+      });
+      if (!ctlSame('objd', c.obj == null ? Infinity : c.obj, c0.obj == null ? Infinity : c0.obj)) d.obj = c.obj;
+      if (Object.keys(d).length) { cd[ci] = d; nd++; }
+    });
+    if (nd) o.cd = cd;
+    // 各结构的渐晕：0 = 换回了文件系数，对象 = 自己按「一键渐晕」算的，不存 = 用原样的
+    var vz = {}, nv = 0, n = Math.max((state.cfgs || []).length, 1);
+    for (var ci = 0; ci < n; ci++) {
+      var va = state.vigAuto && state.vigAuto[ci], vl = L.vigAuto && L.vigAuto[ci];
+      if (!same(va, vl)) { vz[ci] = va || 0; nv++; }
+    }
+    if (nv) o.vgz = vz;
+    return o;
+  }
+  function applyCtl(o, keys) {
+    keys.forEach(function (k) {
+      if (!(k in o) || o[k] === undefined) return;
+      var v = o[k];
+      if (k === 'aim') $('aim').checked = !!v;
+      else if (k === 'objd') $('objd').value = fmtObjDist(v == null ? Infinity : v);   // JSON 里 Infinity 是 null
+      else if (k === 'freqs') { if (v && v.length) $('freqs').value = v.join(', '); }
+      else if (k === 'wlRaw') { if (v && v.length) { state.wl = v; state.pri = Math.min(state.pri, v.length - 1); } }
+      else if (k === 'pri') state.pri = Math.min(+v || 0, state.wl.length - 1);
+      else if (k === 'stop') { if (v) { state.stop = Math.min(Math.max(v - 1, 0), state.rows.length - 1); state.sel = state.stop; } }
+      else if (v !== null) $(k).value = v;
+    });
+  }
+  /* 已经整颗载入（库里的，或 sessionStorage 里的导入记录）之后，把链接里的改动盖上去。
+     fresh = 链接生成时的数据和现在这份一致；不一致（镜头库更新过）时只套用和几何无关的东西。 */
+  function overlayHash(o, L) {
+    var fresh = !o.sig || o.sig === libSig(L);
+    if (!fresh) PENDMSG.push('镜头库里这颗镜头的数据更新过，已按新数据载入；链接里对处方、光阑面、各结构和渐晕的改动是在旧数据上做的，没有带过来（F/#、视场、物距、波长等设置保留）。');
+    if (fresh && o.cd && state.cfgs) Object.keys(o.cd).forEach(function (ci) {
+      var c = state.cfgs[ci], d = o.cd[ci]; if (!c) return;
+      if (d.full) { c.thi = {}; c.rdy = {}; }
+      ['thi', 'rdy'].forEach(function (f) { Object.keys(d[f] || {}).forEach(function (k) { (c[f] = c[f] || {})[k] = d[f][k]; }); });
+      if ('obj' in d) c.obj = d.obj == null ? Infinity : d.obj;
+    });
+    if (fresh && o.vgz) Object.keys(o.vgz).forEach(function (ci) {
+      var v = o.vgz[ci];
+      if (v === 0) { if (state.vigAuto) delete state.vigAuto[ci]; }
+      else if (v && typeof v === 'object') (state.vigAuto = state.vigAuto || {})[ci] = v;
+    });
+    if (fresh && o.vga !== undefined) {                      // 今天早些时候的 v2 链接只存当前结构的 vga
+      var ci0 = o.cfg || 0;
+      if (o.vga === 0) { if (state.vigAuto) delete state.vigAuto[ci0]; }
+      else if (o.vga && typeof o.vga === 'object') (state.vigAuto = state.vigAuto || {})[ci0] = o.vga;
+    }
+    var n = state.cfgs ? state.cfgs.length : 0;
+    var cfgOk = o.cfg > 0 && o.cfg < n && (fresh || (o.ct != null && state.cfgs[o.cfg].title === o.ct));
+    if (cfgOk) { state.cfg = o.cfg; applyCfg(o.cfg); }
+    if (fresh && o.tx) { var rows = textToRows(o.tx); if (rows.length >= 2) state.rows = rows; }
+    if (fresh && o.sdDraw !== undefined) state.sdDraw = o.sdDraw;
+    if (fresh && o.sdAp !== undefined) state.sdAp = o.sdAp;
+    applyCtl(o, VIEWCTL.concat(LENSCTL.filter(function (k) { return fresh || k !== 'stop'; })));
+    // 当前结构的覆盖项跟着处方和物距同步（改过物距 / 对焦群 / 结构色格子的都在 tx 里），切走再切回不会丢
+    var c = state.cfgs && state.cfgs[state.cfg];
+    if (c) {
+      Object.keys(c.thi || {}).forEach(function (k) { var v = parseFloat(state.rows[k] && state.rows[k].T); if (isFinite(v)) c.thi[k] = v; });
+      Object.keys(c.rdy || {}).forEach(function (k) { var v = parseFloat(state.rows[k] && state.rows[k].R); if (isFinite(v)) c.rdy[k] = v; });
+      c.obj = parseObjDist($('objd').value);
+    }
+    syncApMode(); syncFMode(); renderCfg(); renderLDE(); renderWL();
+  }
+  /* 只有处方文本可用（旧链接认不出 / 导入的链接换了浏览器）：照旧只还原处方和控件 */
+  function restoreTxOnly(o) {
+    if (!o.tx) return false;
+    state.libId = null; state.imp = false; IMPREC = null; CURORIGIN = null; LENSMSG = [];
+    state.rows = textToRows(o.tx);
+    state.cfgs = null; state.cfgs0 = null; state.T0 = null; state.cfg = 0; state.vigAuto = null; state.vigH = null;
+    state.sdDraw = o.sdDraw || null; state.sdAp = o.sdAp || null;
+    state.stop = 0; state.sel = 0;
+    applyCtl(o, VIEWCTL.concat(LENSCTL));
+    $('ex').selectedIndex = -1;
+    syncApMode(); syncFMode(); renderCfg(); renderLDE(); renderWL();
+    histBase();
+    return true;
+  }
+  /* 玻璃按「解析出来是哪一种」比，不按字面：重新录入后 J-LASF016 可能写成 JLASF016_HIKARI */
+  function matKey(m) {
+    var t = String(m || '').trim(), u = t.toUpperCase();
+    if (!t || u === '-' || u === 'AIR') return '';
+    var g = OPT.parseMaterial(t);
+    return g && g.glass ? g.glass + '@' + (g.cat || '') : u;
+  }
+  function sameNum(a, b) {
+    var x = parseFloat(a), y = parseFloat(b);
+    if (!isFinite(x) || !isFinite(y)) return !isFinite(x) && !isFinite(y);    // inf / 空 都算平面
+    return Math.abs(x - y) <= 1e-6 * Math.max(1, Math.abs(x));
+  }
+  /* 旧链接认镜头：曲率和玻璃逐面一致（对焦只动厚度，曲率 + 玻璃足以唯一确定是哪颗），
+     结构取厚度总偏差最小的那个；exact = 厚度也逐面一致（链接里没有改动，或数据没变过）。
+     只在单文件版做——静态站的镜头要一颗颗下载，不值得。 */
+  function matchLegacy(tx) {
+    var want = textToRows(tx), best = null;
+    if (want.length < 2) return null;
+    var wk = want.map(function (r) { return matKey(r.mat); });
+    LENSDB.index.forEach(function (e) {
+      var L = LENSDB.inline[e.id];
+      if (!L || !L.tx || textToRows(L.tx).length !== want.length) return;
+      var nc = (L.cfgs && L.cfgs.length) || 1;
+      for (var ci = 0; ci < nc; ci++) {
+        var rows = cfgRows(L, ci), ok = true, dT = 0;
+        for (var i = 0; i < rows.length && ok; i++) {
+          if (!sameNum(rows[i].R, want[i].R) || matKey(rows[i].mat) !== wk[i]) ok = false;
+          else dT += Math.abs((parseFloat(rows[i].T) || 0) - (parseFloat(want[i].T) || 0));
+        }
+        if (ok && (!best || dT < best.dT)) best = { id: e.id, cfg: ci, dT: dT };
+      }
+    });
+    if (best) best.exact = best.dT < 1e-6;
+    return best;
+  }
+  /* 启动时从链接恢复。返回 true = 已接手（包括异步载入中），false = 链接里没东西，走默认镜头 */
+  function restoreHash(o) {
+    if (!o) return false;
+    if (!o.v && o.tx) {                                       // 旧版链接：认回是哪颗
+      var m = matchLegacy(o.tx);
+      if (!m) return restoreTxOnly(o);
+      if (!m.exact) PENDMSG.push('旧版链接：已按镜头库重新载入这颗镜头（结构 Z' + (m.cfg + 1) + '）。链接里的处方和现在的库不完全一致（改过的厚度，或库里的数据后来更新过），这些差别没有套用。');
+      // 旧链接的控件照旧套用；处方不盖（exact 时本来就一样）
+      var o2 = { v: 2, id: m.id, cfg: m.cfg, sig: libSig(LENSDB.inline[m.id]) };
+      VIEWCTL.concat(LENSCTL).forEach(function (k) { if (k in o) o2[k] = o[k]; });
+      o = o2;
+    }
+    if (o.v === 2 && o.id) {
+      if (!idxEntry(o.id) && IDALIAS[o.id]) o = Object.assign({}, o, { id: IDALIAS[o.id] });
+      if (!idxEntry(o.id)) {
+        if (o.tx) { PENDMSG.push('链接里的镜头「' + o.id + '」镜头库里已经没有了，只还原了处方。'); return restoreTxOnly(o); }
+        PENDMSG.push('链接里的镜头「' + o.id + '」镜头库里已经没有了，链接里也没有处方可还原，已改为显示默认镜头。');
+        return false;
+      }
+      syncLensSelects(o.id);
+      loadLens(o.id, function (err, L) {
+        if (err) return;
+        histBase();                          // 撤销 / 恢复初始的起点 = 库里原样；盖上的改动是第一步
+        overlayHash(o, L);
+        schedule(0);
+      });
+      return true;
+    }
+    if (o.v === 2 && o.imp) {
+      var rec = null;
+      try { rec = JSON.parse(sessionStorage.getItem(IMPKEY)); } catch (e) { rec = null; }
+      if (rec && rec.tx && o.isig && libSig(rec) === o.isig) {
+        CURORIGIN = null; $('ex').selectedIndex = -1;
+        state.libId = null; state.imp = true; IMPREC = rec;
+        applyLens(rec);
+        histBase();
+        overlayHash(Object.assign({}, o, { sig: o.isig }), rec);
+        schedule(0);
+        return true;
+      }
+      PENDMSG.push(rec && rec.tx
+        ? '这是另一个导入文件的链接（这个标签页后来又导入过别的文件），多重结构、渐晕、通光没法还原，只还原了处方。要完整数据请重新导入那个文件。'
+        : '这是导入文件的链接：多重结构、渐晕系数、通光孔径没法随链接带过来，只还原了处方。要完整数据请重新导入那个文件。');
+      return restoreTxOnly(o);
+    }
+    return o.tx ? restoreTxOnly(o) : false;
+  }
 
   /* ================= 事件 ================= */
   var timer = null;
@@ -1329,9 +1810,25 @@
     renderLDE(); schedule(0);
   });
 
+  /* 插删面后，多重结构里按面号存的厚度 / 曲率跟着挪，否则切结构会把值写进错的行。
+     cfgs0 / T0 故意不动：它们是文件原样，插删过面以后「最佳对焦」本来就不再认对焦凸轮。 */
+  function shiftCfgKeys(i, delta) {
+    (state.cfgs || []).forEach(function (c) {
+      ['thi', 'rdy'].forEach(function (f) {
+        if (!c[f]) return;
+        var o = {};
+        Object.keys(c[f]).forEach(function (k) {
+          var n = +k, m = delta > 0 ? (n >= i ? n + 1 : n) : (n === i ? -1 : (n > i ? n - 1 : n));
+          if (m >= 0) o[m] = c[f][k];
+        });
+        c[f] = o;
+      });
+    });
+  }
   $('insBtn').addEventListener('click', function () {
     var i = Math.min(state.sel + 1, state.rows.length);
     state.rows.splice(i, 0, blankRow());
+    shiftCfgKeys(i, +1);
     [state.sdDraw, state.sdAp].forEach(function (a) { if (a) a.splice(i, 0, null); });
     if (state.stop >= i) state.stop++;
     state.sel = i; renderLDE(); schedule(0);
@@ -1340,6 +1837,7 @@
     if (state.rows.length <= 2) return;
     var i = Math.min(state.sel, state.rows.length - 1);
     state.rows.splice(i, 1);
+    shiftCfgKeys(i, -1);
     [state.sdDraw, state.sdAp].forEach(function (a) { if (a) a.splice(i, 1); });
     if (state.stop > i) state.stop--;
     state.stop = Math.min(state.stop, state.rows.length - 1);
@@ -1409,6 +1907,8 @@
       var nSurf = L.tx.split('\n').length;
       $('ex').selectedIndex = -1;
       CURORIGIN = null;                       // 现场导入的文件不带来源标记
+      state.libId = null; state.imp = true; IMPREC = JSON.parse(JSON.stringify(L));   // 原样快照，applyLens 之后的改动不影响它
+      try { sessionStorage.setItem(IMPKEY, JSON.stringify(L)); } catch (err) { }   // 同一标签页刷新时整条还原
       applyLens(L);
       LENSMSG = ['已导入 ' + f.name + '（' + (L.kind === 'zmx' ? 'Zemax .zmx' : 'CODE V .seq') + '）：' +
         nSurf + ' 面' + (L.title ? '，标题「' + L.title + '」' : '') + '。'].concat(LENSMSG);
@@ -1456,8 +1956,11 @@
     originBadge($('originBadge'), CURORIGIN);
     lensNotes(e);
   }
+  /* 提示框只放「需要处理的事」。镜头记录自带的说明（数据来源、厚度解、渐晕预算…）不再倒进来——
+     那是每颗镜头常驻的一大段，用户要看的是表和信息卡；来源说明留在表头「专利 / 逆向」徽标的悬停提示里。
+     现场导入的文件例外：解析警告（CIR 覆盖率、数字式玻璃、单位…）就是导入时该看的。 */
   function lensNotes(e) {
-    var w = (e.warn || []).slice();
+    var w = CURORIGIN ? [] : (e.warn || []).slice();
     var miss = [], sub = [], seen = {};
     state.rows.forEach(function (r) {
       var t = (r.mat || '').trim();
@@ -1469,11 +1972,6 @@
     if (sub.length) w.push('这些牌号库里没有完全同名，已按去掉末位变体后缀的同族玻璃代入：' + sub.join('、') + '。');
     if (miss.length) w.push('内置玻璃库（' + OPT.glassCount() + ' 种牌号）里找不到：' + miss.join('、') +
       ' —— 这些面按空气处理，可在「玻璃」列改写为 nd/vd 或 6 位 MIL 代码。');
-    if (e.cfgs && e.cfgs.length > 1) w.push('这颗镜头有 ' + e.cfgs.length + ' 个结构（' +
-      e.cfgs.map(function (c) { return c.title; }).join(' / ') + '），用工具栏「结构」下拉切换；随结构变化的格子在表里标了色。');
-    if (CURORIGIN && CURORIGIN.origin)
-      w.unshift('数据来源：' + CURORIGIN.origin + (CURORIGIN.originNote ? ' —— ' + CURORIGIN.originNote : '') +
-        '读数只代表这份数据本身，不等于厂商实际产品的性能。');
     LENSMSG = w;
   }
   var LENSMSG = [], PENDMSG = [];
@@ -1959,7 +2457,8 @@
   /* ================= 双镜头对比（二级页） =================
      共用：光谱 / 频率 / MTF 算法 / 瞳面网格 / 视场点数 / 横轴。
      各自按文件走：孔径定义与 F/#、视场定义与最大像高、渐晕系数、多重结构。
-     —— 这几项是镜头本身的规格，强行统一就不是那颗镜头了。 */
+     —— 这几项是镜头本身的规格，强行统一就不是那颗镜头了。
+     例外是光圈：可以选择把大光圈的那只收到另一只的 F/#（或两只都收到指定 F/#），渐晕随光阑一起重算，见 cmpFinish。 */
   var CMP = { A: { id: null, cfg: 0, res: null }, B: { id: null, cfg: 0, res: null }, on: false };
   var CMPCA = ['--f2', '--f3', '--f1', '--f4'];      // A：冷色
   var CMPCB = ['--v2', '--v3', '--v1', '--v2'];      // B：暖色
@@ -1970,11 +2469,36 @@
       freqs: parseList($('cmpFreqs').value, [10, 30]).filter(function (v) { return v > 0; }).slice(0, 4),
       mode: $('cmpMode').value, ts: $('cmpTS').value, xax: $('cmpX').value,
       ngrid: +$('cmpGrid').value, nfield: +$('cmpN').value, focus: $('cmpFocus').checked,
-      vigFile: $('cmpVig').checked
+      vigFile: $('cmpVig').checked,
+      ap: $('cmpAp').value, apF: parseFloat($('cmpApF').value)
     };
   }
+  /* 收光圈后的渐晕系数。别的镜片挡掉哪些光线和光阑多大无关（瞄准时光线按光阑面上的落点参数化，
+     同一个落点就是同一条光线）；光阑缩小只是再和一个更小的圆取交集。所以原渐晕区域 [lo, hi]（旧光阑归一化）
+     换到新光阑归一化是除以 k = 新半径 / 旧半径，再裁到 ±1 以内。弧矢方向在新的子午中心线上量，
+     宽度按原渐晕椭圆在那一行的弦长算——和 setVig「弧矢在子午瞳中心那一行量」同一个口径。
+     全库实测（有 setVig 表的镜头 × 全部结构 × 收缩比 1.1/1.4/2/2.8/4，共 1565 例）：和收完光圈重跑 setVig 相比，
+     1561 例差 < 0.002，3 例弧矢差 0.003~0.006；剩下 1 例（RF 85 Macro Z4 收 4 倍，最大视场）是 setVig 的起点探针只到 ±0.9、
+     漏掉了只剩 [−1, −0.93] 一条细缝的瞳，判成全黑——这里的换算才是对的。所以直接换算，不重跑。
+     整条子午轴都落到新光阑外面（主光线本来就被挡的视场才会这样）按 setVig 的约定记成全渐晕 vuy = vly = 1。 */
+  function vigShrink(v, k) {
+    if (!v || !v.vuy || !(k > 0 && k < 1)) return v;
+    var o = { th: v.th, vuy: [], vly: [], vux: [], vlx: [] };
+    if (v.auto) o.auto = v.auto;
+    for (var i = 0; i < v.vuy.length; i++) {
+      var hi = 1 - v.vuy[i], lo = -1 + v.vly[i], xh = 1 - v.vux[i], xl = -1 + v.vlx[i];
+      var cy = (hi + lo) / 2, ay = (hi - lo) / 2, cx = (xh + xl) / 2, ax = (xh - xl) / 2;
+      var hi2 = Math.min(1, hi / k), lo2 = Math.max(-1, lo / k);
+      if (!(hi2 > lo2)) { o.vuy.push(1); o.vly.push(1); o.vux.push(1); o.vlx.push(1); continue; }
+      var t = ay > 1e-12 ? ((hi2 + lo2) / 2 * k - cy) / ay : 0;
+      var wE = ax * Math.sqrt(Math.max(0, 1 - t * t));
+      o.vuy.push(1 - hi2); o.vly.push(1 + lo2);
+      o.vux.push(1 - Math.min(1, (cx + wE) / k)); o.vlx.push(1 + Math.max(-1, (cx - wE) / k));
+    }
+    return o;
+  }
   /* 建系统 + 挂渐晕 + 定视场点（与主页面 compute() 同一套规则） */
-  function cmpAttach(sur, opt, L, c, S, ci) {
+  function cmpAttach(sur, opt, L, c, S, ci, shrink) {
     var sys = OPT.buildSystem(sur, opt);
     var hgt = (L.fmode || 'height') === 'height';
     var vsrc = (c && c.vig) || null;
@@ -1993,6 +2517,7 @@
                   }),
                   vuy: vAuto.vuy, vly: vAuto.vly, vux: vAuto.vux, vlx: vAuto.vlx, auto: 1 };
     }
+    if (shrink) sys.vig = vigShrink(sys.vig, shrink);      // 收了光圈：渐晕表跟着光阑换算
     if (hgt) {
       var mk = function (n) {
         var o = [];
@@ -2006,7 +2531,8 @@
     for (var qf = 0; qf < NFAN; qf++) opt.fieldsFan.push(opt.maxFov * qf / (NFAN - 1));
     return sys;
   }
-  function cmpBuild(L, ci, S) {
+  /* 第一步只建系统（便宜）：两边的 F/# 都知道了才能定收到多少，再各自做第二步（追迹 MTF，贵） */
+  function cmpPrep(L, ci, S) {
     if (!L || !L.tx) return null;
     var sur = OPT.parsePrescription(L.tx).surfaces;
     if (sur.length < 2) return null;
@@ -2041,13 +2567,40 @@
       freqs: S.freqs, nRayViz: 3, nFieldViz: 3, colorBy: 'field', mtfMode: S.mode, objDist: objd,
       sdDraw: L.sdDraw || null, sdAp: L.sdAp || null
     };
-    var sys = cmpAttach(sur, opt, L, c, S, ci);
+    return { L: L, c: c, ci: ci, sur: sur, opt: opt, wl: wl, sys: cmpAttach(sur, opt, L, c, S, ci) };
+  }
+  /* 第二步：需要的话收光圈（fnoTo 比这颗现在的工作 F/# 暗才收，开不到比设计更大的光圈），再对焦、追迹。
+     收光圈 = 按工作 F/# 反解入瞳（孔径定义改成「像方工作 F/#」，无限远时就是 EFL/入瞳），
+     并去掉光阑面上写死的通光：瞄准时归一化瞳坐标以光阑半径为 1，那个半径得跟着新的 F/# 走，
+     否则光线照样铺满原来的光阑，等于没收。旧新两个光阑半径之比就是渐晕表的换算比（vigShrink）。 */
+  function cmpFinish(P, S, fnoTo) {
+    var L = P.L, c = P.c, ci = P.ci, sur = P.sur, opt = P.opt, sys = P.sys, ap = null, shrink = 0;
+    if (fnoTo > 0 && fnoTo > sys.fno * (1 + 1e-4)) {
+      var f0 = sys.fno, r0 = sys.aiming ? sys.sdStop : sys.epd / 2, vig0 = sys.vig;
+      sur[opt.stopIdx].sd = null;                     // null = 不设通光（traceRay 把 0 当成半径 0 的孔，会把光线全挡掉）
+      opt.apertureMode = 'fno'; opt.fno = fnoTo;
+      if (opt.sdAp) { opt.sdAp = opt.sdAp.slice(); opt.sdAp[opt.stopIdx] = null; }
+      sys = cmpAttach(sur, opt, L, c, S, ci);
+      var r1 = sys.aiming ? sys.sdStop : sys.epd / 2;
+      shrink = (r0 > 0 && r1 > 0 && r1 < r0) ? r1 / r0 : 0;
+      if (shrink) sys = cmpAttach(sur, opt, L, c, S, ci, shrink);
+      // 光路图上的光阑刻线画在新的光阑半径上
+      opt.sdDraw = (opt.sdDraw ? opt.sdDraw.slice() : new Array(sur.length).fill(null));
+      opt.sdDraw[opt.stopIdx] = sys.aiming ? sys.sdStop : null;
+      ap = { f0: f0, f1: sys.fno, k: shrink, vig: vig0 ? (vig0.auto ? 'auto' : 'file') : 'trace' };
+    } else if (fnoTo > 0) ap = { f0: sys.fno, f1: sys.fno, k: 0, open: fnoTo < sys.fno * (1 - 1e-4), want: fnoTo };
     if (S.focus) {
       var dz = axialBestFocus(sys, opt);
-      if (dz !== null && isFinite(dz)) { opt.defocus = dz; sys = cmpAttach(sur, opt, L, c, S, ci); }
+      if (dz !== null && isFinite(dz)) { opt.defocus = dz; sys = cmpAttach(sur, opt, L, c, S, ci, shrink); }
     }
-    return { L: L, opt: opt, sys: sys, wl: wl, hgt: (L.fmode || 'height') === 'height',
+    return { L: L, opt: opt, sys: sys, wl: P.wl, hgt: (L.fmode || 'height') === 'height', ap: ap,
              mtf: OPT.mtfVsField(sys, opt), lay: OPT.layoutGeometry(sys, opt) };
+  }
+  /* 收到多少：「收到和另一只一样」取两只里较暗的工作 F/#；「指定 F/#」取填的值 */
+  function cmpApTarget(S, PA, PB) {
+    if (S.ap === 'slow') return (PA && PB) ? Math.max(PA.sys.fno, PB.sys.fno) : 0;
+    if (S.ap === 'fix') return (S.apF > 0 && isFinite(S.apF)) ? S.apF : 0;
+    return 0;
   }
 
   /* ---- 两个下拉 ---- */
@@ -2095,9 +2648,11 @@
   /* ---- 计算 + 画 ---- */
   function cmpRun() {
     if (!CMP.on) return;
-    var S = cmpShared();
+    var S = cmpShared(), P = {};
+    ['A', 'B'].forEach(function (k) { P[k] = CMP[k].L ? cmpPrep(CMP[k].L, CMP[k].cfg, S) : null; });
+    var tgt = cmpApTarget(S, P.A, P.B);
     ['A', 'B'].forEach(function (k) {
-      CMP[k].res = CMP[k].L ? cmpBuild(CMP[k].L, CMP[k].cfg, S) : null;
+      CMP[k].res = P[k] ? cmpFinish(P[k], S, tgt) : null;
       cmpSide(k);
     });
     cmpChart(S);
@@ -2113,6 +2668,10 @@
               ['最大像高', fmt(maxH, 3)], ['轴上 RMS', fmt(R.mtf.rows[0] ? R.mtf.rows[0].rms : 0, 2) + ' µm']];
     if (Math.abs(R.sys.mag || 0) > 1e-9) it.push(['RED', fmt(R.sys.mag, 4)]);
     if (Math.abs(R.opt.defocus) > 1e-9) it.push(['离焦', fmt(R.opt.defocus, 4)]);
+    if (R.ap && R.ap.f1 > R.ap.f0 * (1 + 1e-4)) {
+      it.push(['光圈', '收缩 F/' + fmt(R.ap.f0, 2) + ' → ' + fmt(R.ap.f1, 2)]);
+      it.push(['渐晕', R.ap.vig === 'trace' ? '按通光实时追迹' : R.ap.vig === 'auto' ? '按通光表随光阑重算' : '文件系数随光阑重算']);
+    } else if (R.ap && R.ap.open) it.push(['光圈', '全开 F/' + fmt(R.ap.f0, 2) + '（开不到 F/' + fmt(R.ap.want, 2) + '）']);
     var nm = R.opt.lambdas.map(function (x) { return x.nm; });
     it.push(['波长', nm.length + ' 条 · 主 ' + R.opt.lambdas[R.opt.primary].nm + ' nm']);
     if (CMP[k].entry && CMP[k].entry.origin) it.push(['来源', CMP[k].entry.origin]);
@@ -2238,38 +2797,40 @@
     $('cmpEx' + k).addEventListener('change', function () { CMP[k].cfg = 0; cmpPick(k, this.value, cmpRun); });
     $('cmpCfg' + k).addEventListener('change', function () { CMP[k].cfg = +this.value; cmpRun(); });
   });
-  ['cmpWl', 'cmpFreqs', 'cmpMode', 'cmpTS', 'cmpX', 'cmpGrid', 'cmpN', 'cmpFocus', 'cmpVig'].forEach(function (id) {
+  ['cmpWl', 'cmpFreqs', 'cmpMode', 'cmpTS', 'cmpX', 'cmpGrid', 'cmpN', 'cmpFocus', 'cmpVig', 'cmpApF'].forEach(function (id) {
     $(id).addEventListener('change', cmpRun);
   });
+  /* 选「指定 F/#」时才露出输入框；头一次露出时预填一个常用光圈档：两只里较暗那只之后的第一档 */
+  var CMPSTOPS = [1.4, 2, 2.8, 4, 5.6, 8, 11, 16, 22];
+  $('cmpAp').addEventListener('change', function () {
+    var fix = this.value === 'fix', w = $('cmpApFWrap');
+    if (fix && w.hidden && !w.dataset.touched) {
+      var fs = ['A', 'B'].map(function (k) { return CMP[k].res ? CMP[k].res.ap && CMP[k].res.ap.f0 || CMP[k].res.sys.fno : 0; });
+      var slow = Math.max(fs[0] || 0, fs[1] || 0);
+      var pick = CMPSTOPS.filter(function (v) { return v >= slow * 0.999; })[0];
+      if (pick) $('cmpApF').value = pick;
+    }
+    w.hidden = !fix;
+    cmpRun();
+  });
+  $('cmpApF').addEventListener('input', function () { $('cmpApFWrap').dataset.touched = '1'; });
   addEventListener('resize', function () { if (CMP.on) cmpRun(); });
 
   /* ================= 启动 ================= */
   renderBrandList();
   renderLensList($('brand').value);
   var saved = readHash();
-  if (saved && saved.tx) {
-    state.rows = textToRows(saved.tx);
-    state.stop = Math.min((saved.stop || 1) - 1, state.rows.length - 1); state.sel = state.stop;
-    ['fno', 'fov', 'defoc'].forEach(function (k) { if (saved[k] !== undefined) $(k).value = saved[k]; });
-    if (saved.freqs) $('freqs').value = saved.freqs.join(', ');
-    if (saved.wlRaw && saved.wlRaw.length) { state.wl = saved.wlRaw; state.pri = Math.min(saved.pri || 0, state.wl.length - 1); }
-    if (saved.colorby) $('colorby').value = saved.colorby;
-    if (saved.apmode) $('apmode').value = saved.apmode;
-    if (saved.fmode) $('fmode').value = saved.fmode;
-    if (saved.mtfmode) $('mtfmode').value = saved.mtfmode;
-    $('aim').checked = !!saved.aim;
-    ['ngrid', 'nfield', 'nviz', 'nfviz'].forEach(function (k) { if (saved[k]) $(k).value = saved[k]; });
-    syncApMode(); syncFMode(); renderLDE();
-    $('ex').selectedIndex = -1;              // 链接里带的处方不属于库里任何一颗
-  } else {
+  if (!restoreHash(saved)) {
     var first = (LENSDB.index[0] && LENSDB.index[0].id) || '55za';
     syncLensSelects(first);
     loadLens(first);
+    histBase();
   }
   syncFMode();
   renderWL();
-  histBase();
-  compute();
+  // 同步载入（单文件版）时 restore 已排过一次重算；这里只算一次，提示（如「库更新过」）才不会马上被下一次清掉。
+  // 镜头还在下载（静态站）就先不算：空处方算一遍只会把排队的提示吃掉，下载完的回调自己会算
+  if (!lensPending) { clearTimeout(timer); compute(); }
 
   if (window.ResizeObserver) {
     var roW = 0, roT = null;

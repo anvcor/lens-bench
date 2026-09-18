@@ -65,6 +65,9 @@ body{
   border-radius:6px;padding:4px 10px;font:inherit;font-size:12px;cursor:pointer}
 .iconbtn:hover{border-color:var(--accent);color:var(--accent)}
 .iconbtn:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+/* 顶栏的主入口（对比两颗）：强调色浅底 + 强调色边框文字，悬停填满；亮暗主题都走 --accent 这组变量 */
+.iconbtn.cta{background:var(--accent-soft);border-color:var(--accent);color:var(--accent);font-weight:600}
+.iconbtn.cta:hover{background:var(--accent);border-color:var(--accent);color:var(--panel)}
 
 /* ---------- 系统数据条 ---------- */
 .sysbar{display:flex;flex-wrap:wrap;gap:8px 10px;align-items:flex-end;padding:9px 12px;
@@ -84,7 +87,11 @@ option,optgroup{background-color:var(--panel);color:var(--ink)}   /* 深色下�
 input:focus,select:focus,textarea:focus{outline:2px solid var(--accent);outline-offset:-1px;border-color:var(--accent)}
 
 /* ---------- 工作区 ---------- */
-.work{display:grid;grid-template-columns:minmax(0,4fr) minmax(0,6fr);gap:10px;align-items:start}
+.work{display:grid;grid-template-columns:minmax(0,4fr) minmax(0,6fr);gap:10px;align-items:stretch}
+/* 两列等高，每列最后一张卡片（左：波长，右：球差 · 场曲 · 畸变）吃掉多出来的高度，底边对齐。
+   哪列短就哪列的最后一张往下延；换镜头（表格行数变）、展开说明 / 数据表都是纯 CSS 自动跟上。
+   窄屏单列时各占一行、没有多余高度，不受影响。 */
+.leftcol > :last-child,.viewcol > :last-child{flex:1 1 auto}
 .leftcol{display:flex;flex-direction:column;gap:10px;min-width:0}
 .leftcol > *{flex:0 0 auto}
 @media(max-width:1040px){.work{grid-template-columns:minmax(0,1fr)}}
@@ -137,6 +144,7 @@ table.lde td.zoo{box-shadow:inset 2px 0 0 var(--accent)}
   background:var(--panel-3);padding:1px 4px;border-radius:3px;color:var(--ink-2)}
 .cmpbody{max-width:1680px;margin:0 auto;padding:12px 14px 64px;display:flex;flex-direction:column;gap:10px}
 .cmpbar{margin:0}
+.cmpbar .fld[hidden]{display:none}
 .cmpgrid{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:10px;align-items:start}
 @media(max-width:1000px){.cmpgrid{grid-template-columns:minmax(0,1fr)}}
 .cmptag{display:inline-flex;align-items:center;justify-content:center;width:17px;height:17px;border-radius:5px;
@@ -225,6 +233,20 @@ table.data tbody tr:hover{background:var(--panel-2)}
 .msg{margin:8px 10px 10px;padding:7px 10px;border-radius:6px;font-size:11.5px;line-height:1.5;
      background:var(--warn-bg);border:1px solid var(--warn-line);color:var(--warn)}
 .msg ul{margin:3px 0 0;padding-left:16px}
+/* 镜头信息卡：标称（进度表）+ 本页算出来的 */
+.spec{margin:8px 10px 0;padding:7px 10px 8px;border-radius:6px;background:var(--panel-2);border:1px solid var(--line-2);
+  display:grid;grid-template-columns:repeat(auto-fill,minmax(148px,1fr));gap:6px 14px;font-size:11.5px}
+.spec[hidden]{display:none}
+.spec .hd{grid-column:1/-1;font-size:9.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--ink-3);
+  padding-top:3px;border-top:1px solid var(--line-2);margin-top:2px}
+.spec .hd:first-child{border-top:0;padding-top:0;margin-top:0}
+.spec .it{min-width:0}
+.spec .k{display:block;font-size:9.5px;letter-spacing:.05em;text-transform:uppercase;color:var(--ink-3);white-space:nowrap}
+.spec .v{display:block;font-family:"IBM Plex Mono",monospace;font-variant-numeric:tabular-nums;color:var(--ink);
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.spec .v a{color:var(--accent);text-decoration:none}
+.spec .v a:hover{text-decoration:underline}
+.spec .v i{font-style:normal;color:var(--ink-3)}
 .note{font-size:11.5px;color:var(--ink-3);line-height:1.6;margin:0}
 .note b{color:var(--ink-2)}
 .note + .note{margin-top:9px;padding-top:9px;border-top:1px solid var(--line)}
@@ -285,7 +307,7 @@ table.data tbody tr:hover{background:var(--panel-2)}
     <h1 class="brand">镜头 MTF 仿真台</h1>
     <span class="sub">LDM 表格直接编辑 · Layout 与 MTF 实时重算 · 全部计算在本机浏览器完成</span>
     <span class="spacer"></span>
-    <button class="iconbtn" id="cmpBtn" type="button">对比两颗</button>
+    <button class="iconbtn cta" id="cmpBtn" type="button">对比两颗</button>
     <button class="iconbtn" id="aboutBtn" type="button">关于</button>
     <button class="iconbtn" id="themeBtn" type="button" aria-label="切换亮暗主题">◐ 主题</button>
   </div>
@@ -371,9 +393,11 @@ table.data tbody tr:hover{background:var(--panel-2)}
           <tbody id="ldeBody"></tbody>
         </table>
       </div>
+      <div class="spec" id="lensSpec" hidden></div>
       <div id="msgs"></div>
       <div class="helpwrap" id="ldmHelp" hidden>
         <p class="note"><b>编辑</b>：直接改单元格；点「表面编号」格可把该面设为光阑。</p>
+        <p class="note"><b>镜头信息卡</b>（表格下面那块）：上半是<b>标称</b>——专利号（点开是 Google Patents 检索）、型号代码、卡口 / 画幅 / 类型、标称焦距与光圈、发售年份，来自《镜头仿真进度表》，由 <code>tools/specs_import.py</code> 写进 <code>lenses/meta.json</code>；表里没有的镜头（唯卓仕、七工匠等）只有下半。下半是<b>本页按当前状态算出来的</b>：焦距、F/#、总长、后截距、入瞳、最大像高、片数，以及大致性能——轴上 / 边缘 RMS、前两个频率的中心 / 边缘 MTF、边缘通光率、最大畸变。改表格、切结构、改物距都会跟着刷新；标称值不变，两边对不上就是数据本身和产品的差别。信息卡下面那个琥珀色提示框<b>只在有需要处理的事时出现</b>（导入文件的解析警告、找不到的玻璃、最佳对焦 / 一键渐晕的结果、渐晕表与瞄准设置不一致、衍射采样不足等）；每颗镜头的数据来源与录入说明放在表头「专利 / 逆向」徽标的悬停提示里。</p>
         <p class="note"><b>物面与最佳对焦</b>：物面那一行的厚度就是<b>物距</b>，和顶栏「物距」是同一个量，改哪边都行，写 inf 为无限远；有多重结构时会写回当前结构。改完按<b>最佳对焦</b>：镜头有多个对焦结构时，按<b>镜头自己的对焦群</b>重新对焦——同一焦段、不同物距的几个结构相差的那几个间隔就是对焦群（浮动对焦的几组也一起认出来），把它们按 1/物距 插值成一条对焦凸轮，沿凸轮找<b>轴上 RMS 最小</b>的位置写回表里，<b>像面不动</b>，总长守恒。变焦镜头只用当前焦段的那几个结构，不会把变焦混进来。认不出对焦群（单结构、同物距几组不同间隔、对焦时曲率也在变、插删过面）时退回老办法：移动像面，写进「离焦」。物距超出文件给的对焦行程会提示是外推。</p>
         <p class="note"><b>半孔径</b>：格子里有数（CODE V 的 CIR 或手填）是<b>硬光阑</b>，追迹时光线超出即被挡。没数的面用<b>灰字</b>显示参考值，不挡光，鼠标停上去看来源：文件里写死的通光（Zemax 固定 DIAM / FLAP，「一键渐晕」和 Spot 按它逐面裁剪）→ 文件的半口径（Zemax 自动 DIAM，只用于画图）→ 本页按光线包络算的画图半径。在灰字格里填数就变成硬光阑。</p>
         <p class="note"><b>多重结构</b>：.seq 里的 <code>ZOO</code> 记录（结构数、各结构标题、逐结构的 FNO / 面厚度 / 曲率 / 渐晕系数）会读进来，用工具栏「结构」下拉切换，<b>随结构变化的格子在表里标了色</b>，改这些格子会写回当前结构。物面厚度（<code>ZOO THI S0</code>）落到顶栏「物距」，因此近摄结构按<b>有限共轭</b>追迹：光线从物点发出而非平行入射，F/# 用像方工作 F/#（由近轴边缘光线角 1/(2|u′|) 反解入瞳），状态栏 RED 给出放大倍率。</p>
@@ -392,8 +416,11 @@ table.data tbody tr:hover{background:var(--panel-2)}
     <section class="card">
       <header><h2>波长</h2><span class="grow"></span><span class="badge" id="wlBadge">—</span><button class="helpbtn" type="button" data-help="wlHelp" aria-controls="wlHelp" aria-expanded="false" aria-label="使用说明">?</button></header>
       <div class="ldmbar">
-        <button class="btn" id="wlAdd" type="button">加一行</button>
-        <button class="btn" id="wlDel" type="button">删末行</button>
+        <div class="ldmrow">
+        <div class="btngrp">
+          <button class="btn" id="wlAdd" type="button">加一行</button>
+          <button class="btn" id="wlDel" type="button">删末行</button>
+        </div>
         <select id="wlPreset" aria-label="载入波长预设">
           <option value="" selected>载入预设…</option>
           <option value="p1">d 单色（587.6）</option>
@@ -403,6 +430,7 @@ table.data tbody tr:hover{background:var(--panel-2)}
           <option value="leica">Leica Weighted（455–644）</option>
           <option value="jp">日本厂商光谱权重</option>
         </select>
+        </div>
       </div>
       <div class="wlscroll">
         <table class="lde wl" id="wlTable">
@@ -427,13 +455,13 @@ table.data tbody tr:hover{background:var(--panel-2)}
     <!-- ---- 右：Layout + MTF ---- -->
     <div class="viewcol">
       <section class="card">
-        <header><h2>2D Layout</h2><span class="grow"></span><span class="hdrbtns"><button class="hbtn" id="layZoomOut" type="button" title="缩小（滚轮也可以）">−</button><span class="hzoom" id="layZoomLbl" title="当前缩放；拖动平移，双击复位">1.0×</span><button class="hbtn" id="layZoomIn" type="button" title="放大（滚轮也可以）">+</button><button class="hbtn" id="layZoomReset" type="button" title="复位到整图（双击图也可以）">复位</button><button class="hbtn" id="layCopy" type="button" title="把当前视图（含缩放）渲染成 PNG 复制到剪贴板；剪贴板不可用时改为下载">复制图片</button></span><span class="badge" id="layoutBadge">—</span></header>
+        <header><h2>2D Layout</h2><span class="grow"></span><span class="hdrbtns"><button class="hbtn" id="layZoomOut" type="button" title="缩小（滚轮也可以）">−</button><span class="hzoom" id="layZoomLbl" title="当前缩放；拖动平移，双击复位">1.0×</span><button class="hbtn" id="layZoomIn" type="button" title="放大（滚轮也可以）">+</button><button class="hbtn" id="layZoomReset" type="button" title="复位到整图（双击图也可以）">复位</button><button class="hbtn" id="layCopy" type="button" data-copy="layout" title="把当前视图（含缩放）连同图例渲染成 PNG 复制到剪贴板；剪贴板不可用时改为下载">复制图片</button></span><span class="badge" id="layoutBadge">—</span></header>
         <div class="plotwrap"><svg class="plot" id="layout" role="img" aria-label="镜头二维结构图与光线追迹"></svg></div>
         <div class="legend" id="layoutLegend"></div>
       </section>
 
       <section class="card">
-        <header><h2>MTF vs 视场</h2><span class="grow"></span><span class="badge live" id="perfBadge">—</span></header>
+        <header><h2>MTF vs 视场</h2><span class="grow"></span><button class="hbtn" type="button" data-copy="mtf" title="把图连同图例渲染成 PNG 复制到剪贴板；剪贴板不可用时改为下载">复制图片</button><span class="badge live" id="perfBadge">—</span></header>
         <div class="plotwrap"><svg class="plot" id="mtf" role="img" aria-label="调制传递函数随视场变化曲线"></svg></div>
         <div class="legend" id="mtfLegend"></div>
         <div class="hoverbar mono" id="hover">把指针移到图上可读取任意视场的 T / S 数值。</div>
@@ -444,7 +472,7 @@ table.data tbody tr:hover{background:var(--panel-2)}
       </section>
 
       <section class="card">
-        <header><h2>球差 · 场曲/像散 · 畸变</h2><span class="grow"></span><span class="badge" id="aberBadge">—</span></header>
+        <header><h2>球差 · 场曲/像散 · 畸变</h2><span class="grow"></span><button class="hbtn" type="button" data-copy="aber" title="把图连同图例渲染成 PNG 复制到剪贴板；剪贴板不可用时改为下载">复制图片</button><span class="badge" id="aberBadge">—</span></header>
         <div class="plotwrap"><svg class="plot" id="aber" role="img" aria-label="纵向球差、像散场曲与畸变曲线"></svg></div>
         <div class="legend" id="aberLegend"></div>
       </section>
@@ -454,14 +482,14 @@ table.data tbody tr:hover{background:var(--panel-2)}
 
   <!-- ============ 光线扇形 ============ -->
   <section class="card">
-    <header><h2>光线扇形（Ray Fan）</h2><span class="grow"></span><label class="hdrsel">刻度 ±<select id="fanscale" aria-label="光线扇形纵向刻度"><option value="0" selected>自动</option><option value="0.005">0.005</option><option value="0.01">0.01</option><option value="0.02">0.02</option><option value="0.05">0.05</option><option value="0.1">0.1</option><option value="0.2">0.2</option><option value="0.5">0.5</option></select> mm</label><span class="badge" id="fanBadge">—</span></header>
+    <header><h2>光线扇形（Ray Fan）</h2><span class="grow"></span><label class="hdrsel">刻度 ±<select id="fanscale" aria-label="光线扇形纵向刻度"><option value="0" selected>自动</option><option value="0.005">0.005</option><option value="0.01">0.01</option><option value="0.02">0.02</option><option value="0.05">0.05</option><option value="0.1">0.1</option><option value="0.2">0.2</option><option value="0.5">0.5</option></select> mm</label><button class="hbtn" type="button" data-copy="fan" title="把图连同图例渲染成 PNG 复制到剪贴板；剪贴板不可用时改为下载">复制图片</button><span class="badge" id="fanBadge">—</span></header>
     <div class="plotwrap"><svg class="plot" id="fan" role="img" aria-label="各视场的子午与弧矢光线像差曲线"></svg></div>
     <div class="legend" id="fanLegend"></div>
   </section>
 
   <!-- ============ Spot · 虚化光斑 ============ -->
   <section class="card">
-    <header><h2>Spot · 虚化光斑</h2><span class="grow"></span><span class="badge" id="spotBadge">未计算</span><button class="helpbtn" type="button" data-help="spotHelp" aria-controls="spotHelp" aria-expanded="false" aria-label="使用说明">?</button></header>
+    <header><h2>Spot · 虚化光斑</h2><span class="grow"></span><button class="hbtn" type="button" data-copy="spot" title="把图连同图例渲染成 PNG 复制到剪贴板；剪贴板不可用时改为下载">复制图片</button><span class="badge" id="spotBadge">未计算</span><button class="helpbtn" type="button" data-help="spotHelp" aria-controls="spotHelp" aria-expanded="false" aria-label="使用说明">?</button></header>
     <div class="ldmbar">
       <div class="ldmrow">
         <label class="fld"><span>目标光斑 <i>µm</i></span><input id="spotUm" type="number" step="50" min="20" value="600"></label>
@@ -525,13 +553,20 @@ table.data tbody tr:hover{background:var(--panel-2)}
         <label class="fld"><span>MTF 视场点</span>
           <select id="cmpN" class="w-s"><option value="9">9</option><option value="11" selected>11</option>
             <option value="15">15</option><option value="21">21</option></select></label>
+        <label class="fld"><span>光圈</span>
+          <select id="cmpAp" class="w-l">
+            <option value="" selected>各自原光圈</option>
+            <option value="slow">大光圈收到和另一只一样</option>
+            <option value="fix">两只都收到指定 F/#</option>
+          </select></label>
+        <label class="fld" id="cmpApFWrap" hidden><span>F/#</span><input class="w-xs" id="cmpApF" type="text" inputmode="decimal" value="4"></label>
         <div class="fld chk"><label><input id="cmpFocus" type="checkbox"> 各自最佳对焦</label></div>
         <div class="fld chk"><label><input id="cmpVig" type="checkbox"> 渐晕用文件原值</label></div>
       </div>
 
       <div class="cmpgrid">
       <section class="card">
-        <header><h2><span class="cmptag a">A</span>镜头 A</h2><span class="grow"></span><span class="badge" id="cmpOriginA" hidden></span><span class="badge" id="cmpLayBadgeA">—</span></header>
+        <header><h2><span class="cmptag a">A</span>镜头 A</h2><span class="grow"></span><span class="badge" id="cmpOriginA" hidden></span><button class="hbtn" type="button" data-copy="cmpA" title="把图连同图例渲染成 PNG 复制到剪贴板；剪贴板不可用时改为下载">复制图片</button><span class="badge" id="cmpLayBadgeA">—</span></header>
         <div class="ldmbar">
           <div class="ldmrow">
             <label class="cfgsel"><span>品牌</span><select id="cmpBrandA" aria-label="镜头 A 品牌"></select></label>
@@ -546,7 +581,7 @@ table.data tbody tr:hover{background:var(--panel-2)}
         <div class="cmpstat" id="cmpStatA"></div>
       </section>
       <section class="card">
-        <header><h2><span class="cmptag b">B</span>镜头 B</h2><span class="grow"></span><span class="badge" id="cmpOriginB" hidden></span><span class="badge" id="cmpLayBadgeB">—</span></header>
+        <header><h2><span class="cmptag b">B</span>镜头 B</h2><span class="grow"></span><span class="badge" id="cmpOriginB" hidden></span><button class="hbtn" type="button" data-copy="cmpB" title="把图连同图例渲染成 PNG 复制到剪贴板；剪贴板不可用时改为下载">复制图片</button><span class="badge" id="cmpLayBadgeB">—</span></header>
         <div class="ldmbar">
           <div class="ldmrow">
             <label class="cfgsel"><span>品牌</span><select id="cmpBrandB" aria-label="镜头 B 品牌"></select></label>
@@ -563,14 +598,21 @@ table.data tbody tr:hover{background:var(--panel-2)}
       </div>
 
       <section class="card">
-        <header><h2>MTF vs 视场 · 叠加</h2><span class="grow"></span><span class="badge" id="cmpBadge">—</span><button class="helpbtn" type="button" data-help="cmpHelp" aria-controls="cmpHelp" aria-expanded="false" aria-label="使用说明">?</button></header>
+        <header><h2>MTF vs 视场 · 叠加</h2><span class="grow"></span><button class="hbtn" type="button" data-copy="cmpMtf" title="把图连同图例渲染成 PNG 复制到剪贴板；剪贴板不可用时改为下载">复制图片</button><span class="badge" id="cmpBadge">—</span><button class="helpbtn" type="button" data-help="cmpHelp" aria-controls="cmpHelp" aria-expanded="false" aria-label="使用说明">?</button></header>
         <div class="body">
           <svg id="cmpMtf" class="plot" role="img" aria-label="两颗镜头的 MTF vs 视场对比"></svg>
           <div class="legend" id="cmpLegend"></div>
         </div>
         <div class="helpwrap" id="cmpHelp" hidden>
           <p class="note"><b>A 用冷色、B 用暖色</b>，同一颗镜头里颜色深浅区分频率；<b>实线 = 子午 T，虚线 = 弧矢 S</b>（与主页面同一约定）。
-          两边共用光谱、频率、算法、瞳面网格和视场点数，<b>孔径 / 视场定义 / 渐晕仍各自按文件走</b>——这是镜头本身的规格，强行统一反而不是那颗镜头了。
+          两边共用光谱、频率、算法、瞳面网格和视场点数，<b>视场定义 / 渐晕各自按文件走</b>——这是镜头本身的规格，强行统一反而不是那颗镜头了。
+          <b>光圈</b>默认也各按文件（通常就是全开）。两颗光圈不同时，选「大光圈收到和另一只一样」会把 F/# 小的那只收到另一只的工作 F/#；
+          选「两只都收到指定 F/#」则两只各自收到填的值（已经比它暗的保持全开，镜头开不到比设计更大的光圈）。
+          收光圈就是把光阑缩小，<b>渐晕随之重算</b>：别的镜片挡掉的那部分光线不变，只是再和更小的光阑取交集，
+          所以新的渐晕系数 = 原渐晕区域按新旧光阑半径之比换算后裁到新光阑以内。这和收完光圈重跑一次「一键渐晕」的结果一致
+          （镜头库里有通光数据的镜头，全部结构 × 5 档收缩比实测，差别在 0.006 以内；收得很小时换算反而更可靠——重跑会漏掉只剩一条细缝的边缘视场），
+          而且对文件自带的系数、按可制造性反解的系数同样成立，不依赖镜片通光写没写全。
+          收光圈后两边的衍射极限虚线会重合，剩下的差别就只是像差本身。
           光谱默认统一到<b>可见光 5 线（10/27/29/23/11，主波长 546.1 nm）</b>：两颗镜头文件自带的谱段常常不一样，不统一就不是同一把尺子；选「各自文件自带」才各按各的。
           横轴选「实像高」时两颗按各自的毫米数画，画幅不同的镜头这么比才有意义；选「归一化视场」则各自压到 0~1，比的是相对边缘表现。
           <b>各自最佳对焦</b>勾上后，每颗镜头各自解一次轴上最小 RMS 离焦再算 MTF——文件后焦有零头时（比如取整过的空气间隔）用它比才公平。
