@@ -114,7 +114,7 @@
   var DASH = ['', '5 2.5', '1.6 2.4', '8 2.5 1.6 2.5', '11 3', '2 2 7 2'];
 
   var state = { rows: [], stop: 0, sel: 0, wl: wlSet('p5'), pri: 1,
-                cfgs: null, cfg: 0, vigH: null, sdDraw: null, sdAp: null, vigAuto: null, cfgs0: null, T0: null, libId: null, imp: false };
+                cfgs: null, cfg: 0, vigH: null, sdDraw: null, sdAp: null, vigAuto: null, cfgs0: null, T0: null, libId: null, imp: false, zoomcam: null, camUser: false };
   // libId = 当前处方来自镜头库的哪颗（导入的文件 / 旧链接认不出时为 null）；imp = 当前是导入的文件（记录在 sessionStorage）
   // cfgs0 / T0 = 载入时文件原样的多重结构和各面厚度，只给「最佳对焦」认对焦凸轮用（界面改动会写回 cfgs）
   // cfgs = 多重结构；vigH = 渐晕表对应的像高列表；sdDraw = 画图半口径；
@@ -608,6 +608,7 @@
     $('perfBadge').textContent = (mtf.mode === 'diff' ? '衍射 · ' : '几何 · ') + mtf.rays.toLocaleString('en-US') + ' 条' + (mtf.aiming ? '（瞄准）' : '') + ' · ' + dt.toFixed(0) + ' ms';
     $('stPerf').textContent = '追迹 ' + mtf.rays.toLocaleString('en-US') + ' 条 · ' + dt.toFixed(0) + ' ms · JS 单线程';
     syncVigBtn();
+    syncZoomUI();
     writeHash(hashState(st));
   }
 
@@ -663,6 +664,23 @@
       if (mt) h.push(specTile('卡口 · 画幅 · 类型', esc(mt)));
       if (sp.focal || sp.aperture) h.push(specTile('标称焦距 · 光圈', esc([sp.focal ? sp.focal + ' mm' : '', sp.aperture || ''].filter(Boolean).join(' · '))));
       if (sp.year || sp.status) h.push(specTile('发售', esc([sp.year, sp.status].filter(Boolean).join(' · '))));
+    }
+    var cp = camNow();
+    if (cp && !cp.why) {
+      var C = cp.C, es = camState(cp), angS = camAngle(cp, es.x);
+      h.push('<span class="hd">变焦凸轮 · ' + esc(C.src && C.src.engine || '') + (state.camUser ? ' · 本页拖入' : '') + '</span>');
+      var gen = String(C.src && C.src.generated || '').replace(/^\d{4}-(\d\d)-(\d\d)T(\d\d:\d\d).*$/, '$1-$2 $3');
+      h.push(specTile('凸轮数据', esc(gen || '—'), (C.src && C.src.tag || '') + ' · ' + (C.src && C.src.name || '') + (C.src && C.src.generated ? ' · 生成于 ' + C.src.generated : '')));
+      h.push(specTile('节点 · 对焦表', C.nodes.length + ' · ' + (C.focus ? C.focus.rows.length + '×' + C.focus.rows[0].v.length : '无'),
+        C.nodes.length + ' 个 ∞ 变焦节点；对焦表 ' + (C.focus ? C.focus.rows.length + ' 个焦段 × ' + C.focus.rows[0].v.length + ' 个物距（含 ∞）' : '无')));
+      h.push(specTile('变焦范围', fmt(cp.fmin, 2) + '–' + fmt(cp.fmax, 2) + ' mm' + (C.rot ? ' · 环 ' + C.rot + '°' : '')));
+      h.push(specTile('当前在凸轮上', fmt(-1 / es.x, 2) + ' mm' + (angS != null ? ' · ' + fmt(angS, 1) + '°' : '') +
+        (es.rms > 0.02 ? ' <i>偏离 ' + (es.rms * 1000).toFixed(0) + ' µm</i>' : ''), '按表格里的变焦间隔反推；偏离 = 这些间隔和凸轮的均方根差'));
+      if (cp.rows.length) h.push(specTile('对焦组所在', (isFinite(es.D) ? '物面到像面 ' + fmt(es.D, 0) + ' mm' : '∞') +
+        (es.frms > 0.005 ? ' <i>偏离 ' + (es.frms * 1000).toFixed(0) + ' µm</i>' : ''),
+        '按表格里的对焦间隔在对焦表上反推的对焦距离；和顶栏「物距」对不上就是还没按「最佳对焦」'));
+      if (C.groups && C.groups.length) h.push(specTile('对焦组', esc(camGroupsOf(C, 'focus') || '—'),
+        '随变焦移动：' + (camGroupsOf(C, 'zoom') || '—') + '；' + C.groups.map(function (g) { return g.name + ' ' + (g.label || g.zoom + '/' + g.focus); }).join('，')));
     }
     var s2 = last.sys, rows = last.mtf.rows, N = s2.surfaces.length, freqs = last.opt.freqs || [];
     var oal = s2.zVertex[N - 1], nGlass = s2.surfaces.filter(function (q) { return q.isGlass; }).length;
@@ -783,7 +801,7 @@
     svg.setAttribute('viewBox', '0 0 ' + PX.toFixed(0) + ' ' + PY.toFixed(0));
     svg.setAttribute('preserveAspectRatio', 'xMidYMid meet');
     svg.innerHTML = g.join('');
-    if (ids.svg === 'layout') layBase(+PX.toFixed(0), +PY.toFixed(0));   // 重绘后保留用户的缩放视窗
+    if (ids.svg === 'layout') { LAYZ.box = [xoff, 0, PX - xoff, PY]; layBase(+PX.toFixed(0), +PY.toFixed(0)); }   // 重绘后保留用户的缩放视窗
 
     var drawn = L.bundles.reduce(function (a2, b) { return a2 + b.rays.length; }, 0);
     $(ids.badge).textContent = L.elements.length + ' 片 · ' + drawn + ' 条';
@@ -868,10 +886,21 @@
   }
   (function () {
     var svg = $('layout');
+    /* 滚轮什么时候归 Layout 缩放：
+         ① 指针在镜头绘图区（LAYZ.box，drawLayout / drawZoomLayout 记的镜片 + 光线范围）里——边上的标注、留白不算；
+         ② 指针是自己移进来的——页面滚动时图会从静止的鼠标下面滑过去，那时的滚轮属于页面，照常往下滚。
+            页面最近一次滚动晚于指针在图上最近一次移动，就说明是「图滑到了鼠标下面」，不截。
+       变焦三态图有两三屏高，不这样的话往下滚页面，滚到一半就变成了缩放。 */
+    var lastMove = 0, lastScroll = 0;
+    addEventListener('scroll', function () { lastScroll = performance.now(); }, { passive: true, capture: true });
+    svg.addEventListener('pointermove', function (ev) { if (ev.movementX || ev.movementY) lastMove = performance.now(); });
     svg.addEventListener('wheel', function (ev) {
       if (!LAYZ.W) return;
-      ev.preventDefault();
       var p = layPt(svg, ev); if (!p) return;
+      var b = LAYZ.box;
+      if (b && (p.x < b[0] || p.x > b[2] || p.y < b[1] || p.y > b[3])) return;
+      if (lastScroll > lastMove) return;
+      ev.preventDefault();
       layZoomAt(Math.pow(1.0015, -ev.deltaY), p.x, p.y);   // 每 100 单位约 ×1.16，触控板的细刻度也顺滑
     }, { passive: false });
     svg.addEventListener('pointerdown', function (ev) {
@@ -1109,7 +1138,246 @@
     });
   });
 
+
+  /* ================= Layout · 变焦三态 =================
+     变焦镜头上下画 Wide / Mid / Tele 三态（物距无限远，像面对齐——像面就是卡口，固定不动），
+     组与组之间画随变焦连续移动的轨迹：纵向从一态的光轴到下一态的光轴按 ln f 线性，横向是该组在那个焦距的位置
+     （带凸轮数据的按凸轮节点样条，否则按多重结构的变焦插值），中途每 1/24 取一点，所以曲线就是真实的凸轮形状。
+     组：凸轮数据里写了分组就用它的（带变焦 / 对焦角色）；否则按「变焦时会变的间隔」把镜头切开，
+     位置随变焦变的是变焦组，不变的是固定组，两侧都是对焦间隔的是对焦组。
+     中焦：凸轮数据有 M 锚点（专利的中间态）用它；否则取最接近 √(fW·fT) 的文件焦段。
+     三态的镜片外形共用同一套画图半径（三态各算一次再取每面最大），同一片镜子在三格里一样大。 */
+  var LAYMODE = 'normal', LAYRAYS = false;           // LAYRAYS：变焦三态里画不画三视场光路，默认不画
+  try { if (localStorage.getItem('lensbench.layzoom') === '1') LAYMODE = 'zoom'; if (localStorage.getItem('lensbench.layrays') === '1') LAYRAYS = true; } catch (e) { }
+  function zoomView() {
+    var cp = camNow();
+    if (cp && !cp.why) {
+      var C = cp.C, mA = (C.anchors || []).filter(function (a) { return /^M/i.test(a.name); })[0];
+      var fM = mA ? mA.f : Math.sqrt(cp.fmin * cp.fmax);
+      var gOf = function (f) { return camGaps(cp, camClampX(cp, -1 / f)); };
+      var groups = (C.groups || []).map(function (g) {
+        return { name: g.name, a: g.first - 1, b: g.last - 1, focus: g.focus && g.focus !== 'none', label: g.label };
+      });
+      return { src: 'cam', fW: cp.fmin, fM: fM, fT: cp.fmax, gOf: gOf, keys: cp.keys, groups: groups, fk: cp.fk,
+               mName: mA ? 'M 锚点' : '√(fW·fT)' };
+    }
+    var zm = zoomModelNow();
+    if (!zm || zm.why) return null;
+    zoomCams(zm);
+    var gm = Math.sqrt(zm.fmin * zm.fmax), mq = 0;
+    zm.nodes.forEach(function (n, q) { if (Math.abs(Math.log(n.f / gm)) < Math.abs(Math.log(zm.nodes[mq].f / gm))) mq = q; });
+    if (mq === 0 || mq === zm.nodes.length - 1) mq = Math.floor(zm.nodes.length / 2);
+    /* 对焦组按实际对焦位移认：取中焦的对焦凸轮走到最近的那一档，看每组到像面的距离变了没有
+       （「两侧都是对焦间隔」不够——FE 12-24 的 S14 / S19 两侧夹着的 G3 其实不动，是 G2 和 G4 在浮动对焦） */
+    var dF = null;
+    if (zm.fk.length) {
+      var uMax = 0; zm.nodes.forEach(function (n) { if (n.cam) uMax = Math.max(uMax, n.cam.u[n.cam.u.length - 1]); });
+      if (uMax > 0) dF = zoomDelta(zm, zm.x[mq], uMax);
+    }
+    var N = last.surfaces.length, si = last.opt.stopIdx;
+    var shiftOf = function (a) { var d = 0; if (dF) Object.keys(dF).forEach(function (k) { if (+k >= a) d += dF[k]; }); return d; };
+    var cut = zm.zk.concat(zm.fk.filter(function (k) { return zm.zk.indexOf(k) < 0; })).sort(function (a, b) { return a - b; }), groups = [], a = 0, gi = 0;
+    cut.concat([N - 1]).forEach(function (k) {
+      if (k < a) return;
+      var glass = false; for (var r = a; r <= k; r++) if (last.surfaces[r].isGlass) glass = true;
+      var hasStop = si >= a && si <= k;
+      // 没镜片、也没光阑的是虚拟面，不画
+      if (glass || hasStop) groups.push({ name: glass ? 'G' + (++gi) : 'St', a: a, b: k, sh: dF ? Math.abs(shiftOf(a)) : 0 });
+      a = k + 1;
+    });
+    /* 对焦时相对像面走得最多的组 + 走到它 25% 以上的组才算对焦组。专利数据的近摄结构总长常有零点几毫米的出入
+       （FE 12-24 的 0.06x 短 0.36 mm），按「动没动」判，前组也会被算进去；真正对焦的 G2 走了 2.5 mm */
+    var shMax = Math.max.apply(null, groups.map(function (G) { return G.sh; }).concat([0]));
+    groups.forEach(function (G) { G.focus = shMax > 0.05 && G.sh >= 0.25 * shMax; });
+    return { src: 'cfg', fW: zm.fmin, fM: zm.nodes[mq].f, fT: zm.fmax, gOf: function (f) { return zoomGaps(zm, Math.min(zm.x[zm.x.length - 1], Math.max(zm.x[0], -1 / f))); },
+             keys: zm.keys, groups: groups, fk: zm.fk, mName: '文件焦段 Z' + (zm.nodes[mq].i + 1) };
+  }
+  function syncLayZoomBtn(ok) {
+    var b = $('layZoomMode'); if (!b) return;
+    b.hidden = !ok; b.classList.toggle('ok', ok && LAYMODE === 'zoom');
+    var r = $('layZoomRays');
+    r.hidden = !(ok && LAYMODE === 'zoom'); r.classList.toggle('ok', LAYRAYS);
+  }
+  $('layZoomRays').addEventListener('click', function () {
+    LAYRAYS = !LAYRAYS;
+    try { localStorage.setItem('lensbench.layrays', LAYRAYS ? '1' : '0'); } catch (e) { }
+    if (last) renderLayout();
+  });
+  $('layZoomMode').addEventListener('click', function () {
+    LAYMODE = LAYMODE === 'zoom' ? 'normal' : 'zoom';
+    try { localStorage.setItem('lensbench.layzoom', LAYMODE === 'zoom' ? '1' : '0'); } catch (e) { }
+    LAYZ.zoom = 1;
+    if (last) renderLayout();
+  });
+  function drawZoomLayout(ZV) {
+    var svg = $('layout'), sur0 = last.surfaces, N = sur0.length, si = last.opt.stopIdx;
+    var inkC = css('--ink'), ink2 = css('--ink-2'), ink3 = css('--ink-3');
+    var glass = css('--glass'), glass2 = css('--glass-2'), gstroke = css('--glass-stroke');
+    var cZoom = css('--accent'), cFocus = css('--v2'), lam = last.opt.lambdas[last.opt.primary].nm / 1000;
+    var fmodeH = $('fmode').value === 'height', fov = +$('fov').value || 0;
+    var names = ['Wide', 'Mid', 'Tele'], fs = [ZV.fW, ZV.fM, ZV.fT];
+    var rays = LAYRAYS, st0 = rays ? readState() : null, fieldCols = fieldRamp(3), vigOK = 0;
+    var build = function (gm, sdDraw) {
+      var sur = withT(sur0, gm);
+      var o = Object.assign({}, last.opt, { objDist: Infinity, defocus: 0, nRayViz: rays ? (+$('nviz').value || 3) : 3, colorBy: 'field', sdDraw: sdDraw || last.opt.sdDraw });
+      var sys = OPT.buildSystem(sur, o); sys.vig = null;
+      var angAt = function (q) { var t = fmodeH ? OPT.angleForHeight(sys, fov * q, lam) : fov * q; return isFinite(t) ? t : 0; };
+      if (rays) {
+        /* 三视场光路：每一态的渐晕按该焦段的真实通光现算（和「一键渐晕」同一套 SET VIGNETTING），
+           算不出（镜片没写通光）就按通光实时追迹 */
+        var AV = autoVigTable(sys, o, st0);
+        if (AV && !AV.v.dark) {
+          sys.vig = { th: AV.fr.map(function (q) { return angAt(q); }), vuy: AV.v.vuy, vly: AV.v.vly, vux: AV.v.vux, vlx: AV.v.vlx, auto: 1 };
+          vigOK++;
+        }
+        o.fieldsViz = [0, angAt(0.5), angAt(1)];
+      } else o.fieldsViz = [0, angAt(1)];
+      return { sur: sur, sys: sys, lay: OPT.layoutGeometry(sys, o) };
+    };
+    var S = fs.map(function (f) { return { f: f, gm: ZV.gOf(f) }; });
+    S.forEach(function (s) { s.B = build(s.gm); });
+    var common = []; for (var k = 0; k < N; k++) common.push(Math.max.apply(null, S.map(function (s) { return s.B.lay.drawSd[k] || 0; })) || null);
+    S.forEach(function (s) { s.B = build(s.gm, common); s.track = s.B.sys.zImg; s.efl = Math.abs(s.B.sys.efl); });
+    // 位置 = 到像面的距离
+    var posOf = function (gm, r) { var d = 0; for (var q = r; q < N; q++) d += (gm[q] != null ? gm[q] : sur0[q].T); return d; };
+    var maxL = 0, maxY = 0;
+    S.forEach(function (s) {
+      maxL = Math.max(maxL, s.track);
+      s.B.lay.elements.forEach(function (e) { e.front.concat(e.back).forEach(function (p) { maxY = Math.max(maxY, Math.abs(p[1])); }); });
+      if (rays) s.B.lay.bundles.forEach(function (b) { b.rays.forEach(function (r) { r.forEach(function (p) {
+        maxY = Math.max(maxY, Math.abs(p[1])); maxL = Math.max(maxL, s.track - p[0]); }); }); });
+    });
+    maxY = Math.max(maxY, 1) * 1.06;
+    var avail = paneW('layout', 480), padL = 96, padR = 24, top = 54, gapR = 0.2;    // gapR：两格之间的空档 / 格高（轨迹只画在空档里，不必留太大）
+    var hTot = 2 * maxY * (3 + 2 * gapR) + 0, scale = Math.min((avail - padL - padR) / maxL, Math.max(260, Math.min(1000, avail * 0.9)) / hTot);
+    var PX = avail, PY = Math.round(top + hTot * scale + 38);
+    var xImg = padL + maxL * scale + Math.max(0, (avail - padL - padR - maxL * scale) / 2);
+    var axisY = [0, 1, 2].map(function (i) { return top + (maxY + i * 2 * maxY * (1 + gapR)) * scale; });
+    var X = function (d) { return xImg - d * scale; };
+    var g = [];
+    var sw = function (w) { return ' stroke-width="' + w + '" data-sw="' + w + '"'; };
+    var dash = function (da) { return da ? ' stroke-dasharray="' + da + '" data-da="' + da + '"' : ''; };
+    var label = function (ax, ay, dx, dy, anchor, text, col, size, weight) {
+      return '<g data-tx="' + ax.toFixed(3) + '" data-ty="' + ay.toFixed(3) + '" transform="translate(' + ax.toFixed(3) + ' ' + ay.toFixed(3) + ')">' +
+        '<text x="' + dx + '" y="' + dy + '" fill="' + (col || ink2) + '" font-size="' + (size || 10.5) + '"' + (weight ? ' font-weight="' + weight + '"' : '') +
+        ' text-anchor="' + anchor + '" font-family="IBM Plex Mono, monospace">' + text + '</text></g>';
+    };
+    /* 每态每组的外形：组内镜片轮廓的轴向范围和最大半高。轨迹的端点 = 组外形的轴向中点，
+       纵向从上一格该组的下边缘走到下一格该组的上边缘——只画在两格之间的空档里，不穿过镜片。
+       中间焦距的横向位置 = 组第一面顶点的位置（按凸轮 / 插值）+「中点相对第一面」的偏移（两端之间线性过渡）。 */
+    S.forEach(function (s) {
+      var sys = s.B.sys, elemIdx = [];
+      for (var q = 0; q < N; q++) if (sys.surfaces[q].isGlass && q + 1 < N) elemIdx.push(q);
+      s.geo = ZV.groups.map(function (G) {
+        var zMin = Infinity, zMax = -Infinity, sd = 0;
+        s.B.lay.elements.forEach(function (e, j) {
+          if (elemIdx[j] < G.a || elemIdx[j] > G.b) return;
+          e.front.concat(e.back).forEach(function (pt) { zMin = Math.min(zMin, pt[0]); zMax = Math.max(zMax, pt[0]); sd = Math.max(sd, Math.abs(pt[1])); });
+        });
+        if (!isFinite(zMin)) {                             // 只有光阑的「组」：取光阑面
+          zMin = zMax = sys.zVertex[Math.min(Math.max(si, G.a), G.b)];
+          sd = (s.B.lay.drawSd && s.B.lay.drawSd[si]) || sys.sdStop || 1;
+        }
+        var dc = s.track - (zMin + zMax) / 2;
+        return { dc: dc, sd: sd, off: dc - posOf(s.gm, G.a), d0: s.track - zMin, d1: s.track - zMax };
+      });
+    });
+    var moving = ZV.groups.map(function (G, gi) {
+      var p = S.map(function (s) { return s.geo[gi].dc; });
+      return Math.max.apply(null, p) - Math.min.apply(null, p) > 0.1;   // 专利数据的总长在各焦段间常有几十 µm 的出入（尼康 24-70 II 的 G1 差 0.06 mm），不算移动
+    });
+    var U = function (f) { return Math.log(f); };
+    ZV.groups.forEach(function (G, gi) {
+      var col = G.focus ? cFocus : moving[gi] ? cZoom : ink3;
+      for (var seg = 0; seg < 2; seg++) {
+        var f0 = fs[seg], f1 = fs[seg + 1], A = S[seg].geo[gi], B = S[seg + 1].geo[gi];
+        var y0 = axisY[seg] + A.sd * scale + 3, y1 = axisY[seg + 1] - B.sd * scale - 3, pts = [];
+        if (!(y1 > y0 + 2)) continue;
+        for (var i = 0; i <= 24; i++) {
+          var t = i / 24, f = Math.exp(U(f0) + t * (U(f1) - U(f0)));
+          var d = i === 0 ? A.dc : i === 24 ? B.dc : posOf(ZV.gOf(f), G.a) + A.off + t * (B.off - A.off);
+          pts.push(X(d).toFixed(3) + ' ' + (y0 + t * (y1 - y0)).toFixed(3));
+        }
+        g.push('<path d="M' + pts.join(' L') + '" fill="none" stroke="' + col + '"' + sw(moving[gi] ? 1.4 : 0.9) +
+          (moving[gi] ? '' : dash('3 3')) + ' stroke-opacity="' + (moving[gi] ? .9 : .6) + '" stroke-linecap="round"/>');
+      }
+    });
+    S.forEach(function (s, i) {
+      var ay = axisY[i], Y = function (y) { return ay - y * scale; }, L = s.B.lay, zI = s.track;
+      var P = function (p) { return X(zI - p[0]).toFixed(3) + ' ' + Y(p[1]).toFixed(3); };
+      g.push('<line x1="' + (X(maxL) - 8).toFixed(3) + '" y1="' + ay.toFixed(3) + '" x2="' + (xImg + 10).toFixed(3) + '" y2="' + ay.toFixed(3) +
+        '" stroke="' + ink3 + '"' + sw(1) + dash('7 4') + ' opacity=".5"/>');
+      g.push('<g stroke="' + gstroke + '"' + sw(1.15) + ' stroke-linejoin="round">');
+      L.elements.forEach(function (e) {
+        var d = 'M' + e.front.map(P).join(' L') + ' L' + e.back.slice().reverse().map(P).join(' L') + ' Z';
+        g.push('<path d="' + d + '" fill="' + (e.cemented ? glass2 : glass) + '" fill-opacity=".92"/>');
+      });
+      g.push('</g>');
+      if (rays) L.bundles.forEach(function (b) {
+        g.push('<g fill="none" stroke="' + (fieldCols[b.fi] || fieldCols[0]) + '"' + sw(1.0) + ' stroke-opacity=".9">');
+        b.rays.forEach(function (r) { g.push('<path d="M' + r.map(P).join(' L') + '"/>'); });
+        g.push('</g>');
+      });
+      var zs = s.B.sys.zVertex[si], hs = (L.drawSd && L.drawSd[si]) || s.B.sys.sdStop || 1;
+      if (zs !== undefined) {
+        g.push('<line x1="' + X(zI - zs).toFixed(3) + '" y1="' + Y(hs).toFixed(3) + '" x2="' + X(zI - zs).toFixed(3) + '" y2="' + Y(hs * 1.35 + 0.5).toFixed(3) + '" stroke="' + inkC + '"' + sw(2) + '/>');
+        g.push('<line x1="' + X(zI - zs).toFixed(3) + '" y1="' + Y(-hs).toFixed(3) + '" x2="' + X(zI - zs).toFixed(3) + '" y2="' + Y(-hs * 1.35 - 0.5).toFixed(3) + '" stroke="' + inkC + '"' + sw(2) + '/>');
+      }
+      var ih = Math.min(maxY * 0.8, fmodeH ? fov : maxY * 0.5);
+      g.push('<line x1="' + xImg.toFixed(3) + '" y1="' + Y(ih).toFixed(3) + '" x2="' + xImg.toFixed(3) + '" y2="' + Y(-ih).toFixed(3) + '" stroke="' + inkC + '"' + sw(2) + '/>');
+      var lx = Math.max(8, X(maxL) - 84);                   // 标注贴着镜头左边
+      g.push(label(lx, ay, 0, -4, 'start', names[i], inkC, 12, 600));
+      g.push(label(lx, ay, 0, 11, 'start', 'f ' + fmt(s.efl, 2), ink2, 10.5));
+      g.push(label(lx, ay, 0, 24, 'start', 'Σ ' + fmt(s.track, 1), ink3, 10));
+    });
+    // 组名写在 Wide 格上方；相邻两个挨得太近就错开到上一排
+    var tags = [];
+    ZV.groups.forEach(function (G, gi) {
+      var hasGlass = false; for (var r = G.a; r <= G.b; r++) if (sur0[r] && sur0[r].isGlass) hasGlass = true;
+      if (!hasGlass && G.name !== 'St') return;
+      var t = G.name + (G.focus ? '·F' : '');
+      var Gq = S[0].geo[gi];
+      tags.push({ x: X(Gq.dc), xa: X(Gq.d0), xb: X(Gq.d1), br: hasGlass, t: t, w: t.length * 6.6 + 6, col: G.focus ? cFocus : moving[gi] ? cZoom : ink2 });
+    });
+    tags.sort(function (p, q) { return p.x - q.x; });
+    /* 组括号（专利图的画法）：一条横线跨过该组镜片的轴向范围，两端短竖线朝下，组名写在括号上面；
+       组名挨得太近的错开到上一排 */
+    var yBr = axisY[0] - maxY * scale - 6, lastX = [-1e9, -1e9];
+    tags.forEach(function (T) {
+      if (T.br) {
+        var xa = Math.min(T.xa, T.xb) - 1.5, xb = Math.max(T.xa, T.xb) + 1.5;
+        g.push('<path d="M' + xa.toFixed(3) + ' ' + (yBr + 6).toFixed(3) + ' L' + xa.toFixed(3) + ' ' + yBr.toFixed(3) + ' L' + xb.toFixed(3) + ' ' + yBr.toFixed(3) +
+          ' L' + xb.toFixed(3) + ' ' + (yBr + 6).toFixed(3) + '" fill="none" stroke="' + T.col + '"' + sw(1.1) + ' stroke-linejoin="miter"/>');
+      }
+      var lv = (T.x - T.w / 2 < lastX[0]) ? 1 : 0;
+      lastX[lv] = T.x + T.w / 2;
+      g.push(label(T.x, yBr, 0, -5 - 13 * lv, 'middle', T.t, T.col, 10.5, 600));
+    });
+    g.push(label(xImg, axisY[2] + maxY * scale, 0, 16, 'middle', 'IMG', ink3, 10));
+    svg.setAttribute('viewBox', '0 0 ' + PX.toFixed(0) + ' ' + PY.toFixed(0));
+    svg.setAttribute('preserveAspectRatio', 'xMidYMid meet');
+    svg.innerHTML = g.join('');
+    LAYZ.box = [X(maxL) - 10, top - 30, xImg + 12, axisY[2] + maxY * scale + 20];   // 三态的镜片范围（含组括号）
+    layBase(+PX.toFixed(0), +PY.toFixed(0));
+    var nm = ZV.groups.filter(function (G, gi) { return moving[gi]; });
+    $('layoutBadge').textContent = '变焦三态 · ' + nm.length + ' 组移动';
+    var sw2 = function (c, d) { return '<span class="sw" style="background:' + c + (d ? ';border-top:2px dashed ' + c + ';background:none;height:0' : '') + '"></span>'; };
+    $('layoutLegend').innerHTML =
+      '<span class="lg">' + sw2(cZoom) + '变焦组轨迹</span>' +
+      '<span class="lg">' + sw2(cFocus) + '对焦组（·F，∞ 位置随变焦走）</span>' +
+      '<span class="lg">' + sw2(ink3, 1) + '固定组</span>' +
+      (rays ? ['0', '0.5', '1.0'].map(function (q, i) { return '<span class="lg">' + sw2(fieldCols[i]) + q + ' 视场</span>'; }).join('') : '') +
+      '<span class="lg conv">三态物距 ∞、像面对齐；Mid = ' + ZV.mName + ' ' + fmt(ZV.fM, 2) + ' mm；轨迹按 ' +
+      (ZV.src === 'cam' ? '凸轮数据的 ∞ 节点' : '多重结构的变焦插值') + '，纵向按 ln f · ' +
+      (rays ? '视场按' + (fmodeH ? '像高' : '视场角') + '等分，渐晕' + (vigOK ? '按各焦段的真实通光现算' : '按通光实时追迹') : '光路没画（表头「光路」打开）') + '</span>';
+  }
   function renderLayout() {
+    var ZV = null;
+    try { ZV = zoomView(); } catch (e) { ZV = null; }
+    syncLayZoomBtn(!!ZV);
+    if (ZV && LAYMODE === 'zoom') {
+      try { drawZoomLayout(ZV); return; } catch (e) { PENDMSG.push('变焦三态画不出来：' + e.message + '，改画当前状态。'); }
+    }
     drawLayout({ lay: last.lay, sys: last.sys, mtf: last.mtf, opt: last.opt,
                  wlCols: last.st.wl.map(function (x) { return x.c; }) },
                { svg: 'layout', badge: 'layoutBadge', legend: 'layoutLegend' });
@@ -1553,6 +1821,7 @@
     var o = { v: 2 };
     VIEWCTL.forEach(function (k) { o[k] = st[k]; });
     var L = curRec();
+    if (state.camUser && state.zoomcam && state.zoomcam.src) o.cam = state.zoomcam.src.tag;
     if (!L) { LENSCTL.forEach(function (k) { o[k] = st[k]; }); o.tx = st.tx; return o; }
     if (state.libId) { o.id = state.libId; o.sig = libSig(L); }
     else { o.imp = 1; o.isig = libSig(L); }
@@ -1572,11 +1841,13 @@
       var moved = ['thi', 'rdy'].some(function (f) {
         return Object.keys(c[f] || {}).sort().join() !== Object.keys(c0[f] || {}).sort().join();
       });
+      var vigD = !same(c.vig, c0.vig);                           // 文件渐晕表被改过（变焦时按两侧焦段插值）
       if (moved) {                                               // 插删过面：面号整体挪了，按差量存对不上，整份存
-        cd[ci] = { full: 1, thi: c.thi || {}, rdy: c.rdy || {}, obj: c.obj }; nd++; return;
+        cd[ci] = { full: 1, thi: c.thi || {}, rdy: c.rdy || {}, obj: c.obj }; if (vigD) cd[ci].vig = c.vig || 0; nd++; return;
       }
-      if (ci === state.cfg) return;                              // 当前结构的值由 tx + 物距表示
       var d = {};
+      if (vigD) d.vig = c.vig || 0;
+      if (ci === state.cfg) { if (vigD) { cd[ci] = d; nd++; } return; }   // 当前结构的厚度由 tx + 物距表示
       ['thi', 'rdy'].forEach(function (f) {
         Object.keys(c[f] || {}).forEach(function (k) {
           if (!ctlSame('x', +c[f][k], c0[f] && c0[f][k] != null ? +c0[f][k] : undefined)) (d[f] = d[f] || {})[k] = c[f][k];
@@ -1616,6 +1887,7 @@
     if (fresh && o.cd && state.cfgs) Object.keys(o.cd).forEach(function (ci) {
       var c = state.cfgs[ci], d = o.cd[ci]; if (!c) return;
       if (d.full) { c.thi = {}; c.rdy = {}; }
+      if ('vig' in d) c.vig = d.vig || null;
       ['thi', 'rdy'].forEach(function (f) { Object.keys(d[f] || {}).forEach(function (k) { (c[f] = c[f] || {})[k] = d[f][k]; }); });
       if ('obj' in d) c.obj = d.obj == null ? Infinity : d.obj;
     });
@@ -1643,7 +1915,15 @@
       Object.keys(c.rdy || {}).forEach(function (k) { var v = parseFloat(state.rows[k] && state.rows[k].R); if (isFinite(v)) c.rdy[k] = v; });
       c.obj = parseObjDist($('objd').value);
     }
+    camRestore(o);
     syncApMode(); syncFMode(); renderCfg(); renderLDE(); renderWL();
+  }
+  /* 本页拖入的凸轮数据：同一标签页刷新时从 sessionStorage 挂回去（镜头库自带的随镜头记录来，不用这个） */
+  function camRestore(o) {
+    if (!o.cam) return;
+    var rec = null; try { rec = JSON.parse(sessionStorage.getItem(CAMKEY)); } catch (e) { }
+    if (rec && rec.tag === o.cam && rec.lens === camLensKey() && rec.C) { state.zoomcam = rec.C; state.camUser = true; }
+    else PENDMSG.push('链接里挂过凸轮数据 ' + o.cam + '，这个标签页里没有存着，需要重新导入那个凸轮数据 .json。');
   }
   /* 只有处方文本可用（旧链接认不出 / 导入的链接换了浏览器）：照旧只还原处方和控件 */
   function restoreTxOnly(o) {
@@ -1651,6 +1931,7 @@
     state.libId = null; state.imp = false; IMPREC = null; CURORIGIN = null; LENSMSG = [];
     state.rows = textToRows(o.tx);
     state.cfgs = null; state.cfgs0 = null; state.T0 = null; state.cfg = 0; state.vigAuto = null; state.vigH = null;
+    state.zoomcam = null; state.camUser = false;
     state.sdDraw = o.sdDraw || null; state.sdAp = o.sdAp || null;
     state.stop = 0; state.sel = 0;
     applyCtl(o, VIEWCTL.concat(LENSCTL));
@@ -1900,8 +2181,13 @@
     var f = e.target.files && e.target.files[0]; if (!f) return;
     var rd = new FileReader();
     rd.onload = function () {
-      var L;
-      try { L = LENSIO.fileToLens(new Uint8Array(rd.result), f.name); }
+      var L, u8 = new Uint8Array(rd.result);
+      if (/\.json$/i.test(f.name) || (u8[0] === 0x7B)) {        // { 开头：凸轮数据 JSON
+        var J;
+        try { J = JSON.parse(LENSIO.decode(u8)); } catch (err) { showMsgs(['JSON 解析失败：' + err.message]); return; }
+        camAttach(J, f.name); return;
+      }
+      try { L = LENSIO.fileToLens(u8, f.name); }
       catch (err) { showMsgs(['解析失败：' + err.message]); return; }
       if (!L.tx) { showMsgs(['没有从文件里读到面数据，确认是 CODE V .seq 或 Zemax .zmx 导出？']); return; }
       var nSurf = L.tx.split('\n').length;
@@ -1946,6 +2232,7 @@
     // 镜头库里预先跑过「一键渐晕」的那份（tools/setvig.js 写的），载入即生效；
     // 文件自带的系数还在 cfgs[i].vig 里，按一下工具栏那个键就能换回去。
     state.vigAuto = e.vigAuto ? JSON.parse(JSON.stringify(e.vigAuto)) : null;
+    state.zoomcam = e.zoomcam || null; state.camUser = false;             // 变焦凸轮数据（只读，直接引用）
     state.cfgs = e.cfgs ? JSON.parse(JSON.stringify(e.cfgs)) : null;
     state.cfgs0 = state.cfgs ? JSON.parse(JSON.stringify(state.cfgs)) : null;
     state.T0 = state.rows.map(function (r) { return parseFloat(r.T) || 0; });
@@ -2038,9 +2325,11 @@
     return cam.surf.map(function (_, q) { return cam.t[j][q] + f * (cam.t[j + 1][q] - cam.t[j][q]); });
   }
   function fmtT(v) { return String(+v.toFixed(6)); }
-  function camFocus(cam) {
-    var sur0 = last.surfaces;
-    var base = Object.assign({}, last.opt, { nGrid: 12, freqs: [], nRayViz: 3, nFieldViz: 1, fieldsMTF: [0], nField: 1, mtfMode: 'geo' });
+  /* 沿凸轮搜轴上 RMS 最小的位置。sur0 / opt0 缺省是当前这一版（last）；变焦时传进新焦段的面型与光圈。
+     只算不写：返回 { tv（凸轮各面的厚度）, r0（搜之前）, rB（搜之后）, out（超出文件对焦行程）, D }，写回交给 camApply。 */
+  function camSearch(cam, sur0, opt0) {
+    sur0 = sur0 || last.surfaces;
+    var base = Object.assign({}, opt0 || last.opt, { nGrid: 12, freqs: [], nRayViz: 3, nFieldViz: 1, fieldsMTF: [0], nField: 1, mtfMode: 'geo' });
     var rmsAt = function (sur) {
       var s = OPT.buildSystem(sur, base); s.vig = last.sys.vig;
       var row = OPT.mtfVsField(s, base).rows[0];
@@ -2052,7 +2341,7 @@
     };
     var r0 = rmsAt(sur0);
     var U = cam.u, span = U[U.length - 1] - U[0];
-    var D = last.opt.objDist, uT = (isFinite(D) && D > 0) ? 1 / D : 0;
+    var D = base.objDist, uT = (isFinite(D) && D > 0 && D < 1e7) ? 1 / D : 0;
     var lo = Math.min(U[0], uT) - 0.1 * span, hi = Math.max(U[U.length - 1], uT) + 0.1 * span;
     var best = uT, bv = Infinity, i, c;
     for (i = 0; i <= 16; i++) { var u = lo + (hi - lo) * i / 16; c = cost(u); if (c < bv) { bv = c; best = u; } }
@@ -2067,23 +2356,31 @@
     }
     var uB = f1 <= f2 ? x1 : x2, rB = Math.min(f1, f2);
     if (bv < rB) { uB = best; rB = bv; }
-    if (!isFinite(rB)) return false;
-    var tv = camAt(cam, uB), cfg = state.cfgs[state.cfg];
+    if (!isFinite(rB)) return null;
+    return { tv: camAt(cam, uB), r0: r0, rB: rB, D: D,
+             out: uB < U[0] - 0.05 * span || uB > U[U.length - 1] + 0.05 * span };
+  }
+  function camApply(cam, tv) {
+    var cfg = state.cfgs && state.cfgs[state.cfg];
     cam.surf.forEach(function (k, q) {
       state.rows[k].T = fmtT(tv[q]);
       if (cfg && cfg.thi) cfg.thi[k] = +tv[q].toFixed(6);
     });
-    var out = uB < U[0] - 0.05 * span || uB > U[U.length - 1] + 0.05 * span;
+  }
+  function distTxt(D) { return isFinite(D) && D > 0 ? D.toLocaleString('en-US') + ' mm' : '无限远'; }
+  function camFocus(cam) {
+    var r = camSearch(cam);
+    if (!r) return false;
+    camApply(cam, r.tv);
     PENDMSG.push('最佳对焦：沿镜头自带的对焦群（结构 ' + cam.idx.map(function (q) { return 'Z' + (q + 1); }).join(' / ') +
       ' 的间隔插值，移动 ' + cam.surf.map(function (k) { return 'S' + (k + 1); }).join(' / ') + '）对到 ' +
-      (isFinite(D) && D > 0 ? D.toLocaleString('en-US') + ' mm' : '无限远') + '，轴上 RMS ' +
-      (isFinite(r0) ? r0.toFixed(2) : '—') + ' → ' + rB.toFixed(2) + ' µm，像面不动。' +
-      (out ? '⚠ 这个物距已经超出文件给出的对焦行程，间隔是外推出来的，实际镜头可能对不到。' : ''));
+      distTxt(r.D) + '，轴上 RMS ' + (isFinite(r.r0) ? r.r0.toFixed(2) : '—') + ' → ' + r.rB.toFixed(2) + ' µm，像面不动。' +
+      (r.out ? '⚠ 这个物距已经超出文件给出的对焦行程，间隔是外推出来的，实际镜头可能对不到。' : ''));
     renderLDE();
     return true;
   }
-  function planeFocus(why) {
-    var sur = last.surfaces;
+  function planeFocus(why, surIn) {
+    var sur = surIn || last.surfaces;
     // 直接沿用当前一次计算的全部设置（视场定义 / 物距 / 渐晕 / 波长），只把采样调粗、频率清空
     var base = Object.assign({}, last.opt, { nGrid: 12, freqs: [], nRayViz: 3, nFieldViz: 1 });
     if (base.fieldsMTF && base.fieldsMTF.length > 3) {
@@ -2109,17 +2406,573 @@
     PENDMSG.push('最佳对焦：' + (why ? '认不出对焦群（' + why + '）' : '这颗镜头没有多重结构，不知道哪组是对焦群') +
       '，改为移动像面（三视场平均 RMS 最小），离焦 = ' + (+best.toFixed(4)) + ' mm。');
   }
+
+  /* ================= 变焦 =================
+     多重结构里物距无限远、间隔却各不相同的几个结构，就是变焦镜头文件给出的几个焦段（节点）。
+     变焦凸轮：各间隔对 x = −1/f 做自然三次样条插值。拿索尼 FE 12-24 GM 的 5 个焦段做过留一法
+     （拿掉一个焦段，用其余的预测它，对焦后比画质）：1/f 自然样条的 0.7 视场 RMS 平均是真值的 1.6 倍、最差 2.2 倍；
+     按 f 的 PCHIP 平均 2.5 倍，按 f 直线插值 5~11 倍——变焦凸轮很弯（S11 在 21 mm 那段收到 0.2 mm），
+     光焦度和镜组位置的关系比焦距更接近线性。留一法的节点间距是实际使用时的两倍，真用起来误差更小；
+     但中间焦段终究是插值，只有节点焦段是厂商数据，提示里要说清楚。
+     焦距按「对到无限远时」的 EFL 定（镜身刻度的意思）：插值后先沿对焦群把像面对准，再量 EFL，
+     二分凸轮参数直到正好等于输入值——对焦群一动 EFL 就变，只看插值结果在 12-24 广角段能差 0.4 mm。
+     对焦：每个焦段自己的对焦凸轮用 focusCam 认（同焦段、不同物距的结构），位移量按凸轮参数在相邻两个焦段间加权，
+     得到当前焦段的对焦凸轮，再走「最佳对焦」同一套搜索（轴上 RMS 最小、像面不动）。 */
+  function natSpline(x, y) {                    // 自然三次样条（端点二阶导为 0），x 递增；两点退化为直线
+    var n = x.length, i;
+    if (n === 2) return function (t) { return y[0] + (t - x[0]) / (x[1] - x[0]) * (y[1] - y[0]); };
+    var h = []; for (i = 0; i < n - 1; i++) h.push(x[i + 1] - x[i]);
+    var A = [], B = [], C = [], Dv = [];
+    for (i = 1; i < n - 1; i++) {
+      A.push(h[i - 1]); B.push(2 * (h[i - 1] + h[i])); C.push(h[i]);
+      Dv.push(6 * ((y[i + 1] - y[i]) / h[i] - (y[i] - y[i - 1]) / h[i - 1]));
+    }
+    var m = B.length;
+    for (i = 1; i < m; i++) { var w = A[i] / B[i - 1]; B[i] -= w * C[i - 1]; Dv[i] -= w * Dv[i - 1]; }
+    var X = new Array(m); X[m - 1] = Dv[m - 1] / B[m - 1];
+    for (i = m - 2; i >= 0; i--) X[i] = (Dv[i] - C[i] * X[i + 1]) / B[i];
+    var M = [0].concat(X, [0]);
+    return function (t) {
+      var j = 0; if (t >= x[n - 1]) j = n - 2; else if (t > x[0]) while (j < n - 2 && t > x[j + 1]) j++;
+      var hj = h[j], a = (x[j + 1] - t) / hj, b = (t - x[j]) / hj;
+      return a * y[j] + b * y[j + 1] + ((a * a * a - a) * M[j] + (b * b * b - b) * M[j + 1]) * hj * hj / 6;
+    };
+  }
+  function withT(sur, gm) { return sur.map(function (sf, k) { return gm[k] != null ? Object.assign({}, sf, { T: gm[k] }) : sf; }); }
+  function zoomModel(cfgs, T0, sur0, opt0) {
+    if (!cfgs || cfgs.length < 2 || !T0) return null;
+    var tOf = function (c, k) { return (c.thi && c.thi[k] != null) ? +c.thi[k] : +T0[k]; };
+    var isInf = function (c) { var D = c.obj; return D == null || !isFinite(D) || D <= 0 || D >= 1e7; };
+    var ks = {};
+    cfgs.forEach(function (c) { Object.keys(c.thi || {}).forEach(function (k) { ks[k] = 1; }); });
+    var keys = Object.keys(ks).map(Number).sort(function (a, b) { return a - b; });
+    var nodes = [];
+    cfgs.forEach(function (c, i) {
+      if (!isInf(c)) return;
+      var gm = {}; keys.forEach(function (k) { gm[k] = tOf(c, k); });
+      for (var q = 0; q < nodes.length; q++)
+        if (keys.every(function (k) { return Math.abs(nodes[q].gm[k] - gm[k]) < 1e-9; })) return;   // 重复的无限远结构
+      nodes.push({ i: i, gm: gm, fno: c.fno != null ? +c.fno : null });
+    });
+    if (nodes.length < 2) return null;                        // 只有一个焦段：定焦（内对焦时 EFL 也会变，不能拿它判）
+    var r0 = JSON.stringify(cfgs[nodes[0].i].rdy || {});
+    if (nodes.some(function (n) { return JSON.stringify(cfgs[n.i].rdy || {}) !== r0; })) return { why: '变焦时曲率也在变，不是纯移动镜组' };
+    var optInf = Object.assign({}, opt0, { objDist: Infinity, defocus: 0 });
+    nodes.forEach(function (n) { n.f = Math.abs(OPT.buildSystem(withT(sur0, n.gm), optInf).efl); });
+    nodes.sort(function (a, b) { return a.f - b.f; });
+    for (var q = 1; q < nodes.length; q++)
+      if (!(nodes[q].f > nodes[q - 1].f * (1 + 1e-6))) return { why: '有两个焦段的焦距一样，排不出变焦顺序' };
+    var zk = keys.filter(function (k) { return nodes.some(function (n) { return Math.abs(n.gm[k] - nodes[0].gm[k]) > 1e-9; }); });
+    var x = nodes.map(function (n) { n.x = -1 / n.f; return n.x; }), spl = {};
+    keys.forEach(function (k) { spl[k] = natSpline(x, nodes.map(function (n) { return n.gm[k]; })); });
+    return { cfgs: cfgs, T0: T0, sur0: sur0, opt0: opt0, keys: keys, zk: zk, nodes: nodes, x: x, spl: spl,
+             fmin: nodes[0].f, fmax: nodes[nodes.length - 1].f, fk: null };
+  }
+  /* 各焦段自己的对焦凸轮。某个焦段文件里没有近摄结构时，focusCam 会去抓别的焦段的近摄结构，
+     认出来的「对焦群」混进了变焦间隔——拿各焦段认出的面组投票，和多数不一样的当作没有，用相邻焦段的 */
+  function zoomCams(zm) {
+    if (zm.fk) return zm;
+    var votes = {};
+    zm.nodes.forEach(function (n) {
+      var c = focusCam(zm.cfgs, zm.T0, n.i);
+      n.cam = (c && !c.why) ? c : null;
+      if (n.cam) { var s = n.cam.surf.join(','); votes[s] = (votes[s] || 0) + 1; }
+    });
+    var best = Object.keys(votes).sort(function (a, b) { return votes[b] - votes[a]; })[0];
+    zm.nodes.forEach(function (n) { if (n.cam && n.cam.surf.join(',') !== best) n.cam = null; });
+    zm.fk = best ? best.split(',').map(Number) : [];
+    var sp = zm.nodes.filter(function (n) { return n.cam; }).map(function (n) { return n.cam.u[n.cam.u.length - 1] - n.cam.u[0]; });
+    zm.uStep = sp.length ? 0.02 * Math.min.apply(null, sp) : 0;
+    return zm;
+  }
+  function zoomGaps(zm, p) { var g = {}; zm.keys.forEach(function (k) { g[k] = zm.spl[k](p); }); return g; }
+  function zoomNb(zm, p) {
+    var x = zm.x, n = x.length, j = 0;
+    if (p >= x[n - 1]) j = n - 2; else if (p > x[0]) while (j < n - 2 && p > x[j + 1]) j++;
+    return { a: j, b: j + 1, w: Math.min(1, Math.max(0, (p - x[j]) / (x[j + 1] - x[j]))) };
+  }
+  function zoomDelta(zm, p, u) {                // 当前焦段的对焦位移：两侧焦段的对焦凸轮按凸轮参数加权
+    var nb = zoomNb(zm, p), A = zm.nodes[nb.a].cam, B = zm.nodes[nb.b].cam, d = {};
+    var dl = function (cam, k) { var q = cam.surf.indexOf(k); return q < 0 ? 0 : camAt(cam, u)[q] - camAt(cam, 0)[q]; };
+    zm.fk.forEach(function (k) {
+      d[k] = (A && B) ? (1 - nb.w) * dl(A, k) + nb.w * dl(B, k) : A ? dl(A, k) : B ? dl(B, k) : 0;
+    });
+    return d;
+  }
+  /* 当前焦段的对焦凸轮，做成 focusCam 同样的结构（节点取两侧凸轮的全部物距节点，中间是线性的，采样即精确），
+     直接交给 camSearch / camApply */
+  function zoomCam(zm, p) {
+    var nb = zoomNb(zm, p), A = zm.nodes[nb.a].cam, B = zm.nodes[nb.b].cam, us = {};
+    [A, B].forEach(function (c) { if (c) c.u.forEach(function (u) { us[u] = 1; }); });
+    var U = Object.keys(us).map(Number).sort(function (a, b) { return a - b; });
+    if (U.length < 2 || !zm.fk.length) return null;
+    var Z = zoomGaps(zm, p);
+    return { surf: zm.fk.slice(), u: U,
+             t: U.map(function (u) { var d = zoomDelta(zm, p, u); return zm.fk.map(function (k) { return Z[k] + d[k]; }); }),
+             idx: [].concat(A ? A.idx : [], B ? B.idx : []) };
+  }
+  /* 凸轮参数 p 处、对到无限远时的 EFL：沿对焦群把轴上最佳像面推到像面上（割线法，七条光线的闭式判据），再量 EFL */
+  function zoomEfl(zm, p) {
+    var optInf = Object.assign({}, zm.opt0, { objDist: Infinity, defocus: 0 }), Z = zoomGaps(zm, p);
+    var gAt = function (u) {
+      if (!u) return Z;
+      var d = zoomDelta(zm, p, u), g = Object.assign({}, Z);
+      zm.fk.forEach(function (k) { g[k] = Z[k] + d[k]; });
+      return g;
+    };
+    var uF = 0;
+    if (zm.fk.length && zm.uStep > 0) {
+      var dz = function (u) { var r = axialBestFocus(OPT.buildSystem(withT(zm.sur0, gAt(u)), optInf), optInf); return r === null ? NaN : r; };
+      var u0 = 0, f0 = dz(0), u1 = zm.uStep, f1 = dz(u1);
+      for (var it = 0; it < 14 && isFinite(f0) && isFinite(f1) && Math.abs(f1) > 1e-7 && f1 !== f0; it++) {
+        var u2 = u1 - f1 * (u1 - u0) / (f1 - f0); u0 = u1; f0 = f1; u1 = u2; f1 = dz(u1);
+      }
+      if (isFinite(f1)) uF = u1;
+    }
+    return Math.abs(OPT.buildSystem(withT(zm.sur0, gAt(uF)), optInf).efl);
+  }
+  function zoomSolve(zm, f) {                   // 二分凸轮参数，使对焦后的 EFL = f
+    var a = zm.x[0], b = zm.x[zm.x.length - 1], fa = zoomEfl(zm, a) - f;
+    for (var it = 0; it < 44; it++) {
+      var c = (a + b) / 2, fc = zoomEfl(zm, c) - f;
+      if ((fc < 0) === (fa < 0)) { a = c; fa = fc; } else b = c;
+    }
+    return (a + b) / 2;
+  }
+  /* 从当前表里的间隔反推所在焦段：只看不参与对焦的变焦间隔（对焦群两侧的间隔在对焦时也会变） */
+  function zoomEstimate(zm, gm) {
+    var ks = zm.zk.filter(function (k) { return zm.fk.indexOf(k) < 0; });
+    if (!ks.length) ks = zm.zk;
+    for (var q = 0; q < zm.nodes.length; q++)
+      if (ks.every(function (k) { return Math.abs(zm.nodes[q].gm[k] - gm[k]) < 1e-7; })) return zm.x[q];
+    var E = function (p) { var s = 0; ks.forEach(function (k) { var d = zm.spl[k](p) - gm[k]; s += d * d; }); return s; };
+    var lo = zm.x[0], hi = zm.x[zm.x.length - 1], best = lo, bv = Infinity, i;
+    for (i = 0; i <= 240; i++) { var p = lo + (hi - lo) * i / 240, e = E(p); if (e < bv) { bv = e; best = p; } }
+    var a = Math.max(lo, best - (hi - lo) / 240), b = Math.min(hi, best + (hi - lo) / 240), g = (Math.sqrt(5) - 1) / 2;
+    var x1 = b - g * (b - a), x2 = a + g * (b - a), e1 = E(x1), e2 = E(x2);
+    for (i = 0; i < 60; i++) {
+      if (e1 < e2) { b = x2; x2 = x1; e2 = e1; x1 = b - g * (b - a); e1 = E(x1); }
+      else { a = x1; x1 = x2; e1 = e2; x2 = a + g * (b - a); e2 = E(x2); }
+    }
+    return e1 < e2 ? x1 : x2;
+  }
+  function zoomModelNow() {
+    if (!last || !state.cfgs0 || !state.T0 || state.T0.length !== state.rows.length || last.surfaces.length !== state.rows.length) return null;
+    return zoomModel(state.cfgs0, state.T0, last.surfaces, last.opt);
+  }
+  function syncZoomUI() {
+    var w = $('zoomWrap'); if (!w) return;
+    var cp = camNow();
+    if (cp && !cp.why) {
+      w.hidden = false;
+      $('zoomF').placeholder = fmt(cp.fmin, 1) + '–' + fmt(cp.fmax, 1);
+      var tc = '填焦距（mm，按对到无限远时的 EFL），回车或按「变焦」：按' + camSrcTxt(cp.C) + '变焦，对焦组按它的对焦表对到当前物距';
+      $('zoomF').title = tc; $('zoomBtn').title = tc; $('zoomBtn').classList.add('cam');
+      return;
+    }
+    $('zoomBtn').classList.remove('cam');
+    var zm = zoomModelNow(), on = !!(zm && !zm.why);
+    w.hidden = !on;
+    if (!on) return;
+    var inp = $('zoomF');
+    inp.placeholder = fmt(zm.fmin, 1) + '–' + fmt(zm.fmax, 1);
+    var t = '填焦距（mm，按对到无限远时的 EFL），回车或按「变焦」：变焦间隔按文件里 ' + zm.nodes.length + ' 个焦段（' +
+      zm.nodes.map(function (n) { return 'Z' + (n.i + 1) + ' ' + fmt(n.f, 2); }).join(' / ') + ' mm）的凸轮插值，再沿对焦群对到当前物距';
+    inp.title = t; $('zoomBtn').title = t;
+  }
+  function vigLerp(a, b, w) {
+    var o = {}, L = function (p, q) { return p.map(function (v, i) { return v + w * (q[i] - v); }); };
+    ['vuy', 'vly', 'vux', 'vlx'].forEach(function (k) {
+      var pa = a[k] || a.vuy, pb = b[k] || b.vuy;
+      if (pa && pb && pa.length === pb.length) o[k] = L(pa, pb);
+    });
+    if (a.f) o.f = a.f.slice();
+    return o;
+  }
+  function nodeName(zm, q) { var n = zm.nodes[q]; return 'Z' + (n.i + 1) + '（' + fmt(n.f, 2) + ' mm）'; }
+  /* 「最佳对焦」的变焦分支：按当前焦段插出对焦凸轮。不是变焦镜头、或文件里没有近摄结构时返回 false，走老路 */
+  function zoomFocus() {
+    var cp = camNow();
+    if (cp && !cp.why) return camFocusNow(cp);
+    var zm = zoomModelNow();
+    if (!zm || zm.why) return false;
+    zoomCams(zm);
+    if (!zm.fk.length) return false;
+    var gm = {}; zm.keys.forEach(function (k) { gm[k] = last.surfaces[k].T; });
+    var p = zoomEstimate(zm, gm), cam = zoomCam(zm, p);
+    var r = cam && camSearch(cam);
+    if (!r) return false;
+    camApply(cam, r.tv);
+    var nb = zoomNb(zm, p), atNode = nb.w < 1e-9 || nb.w > 1 - 1e-9;
+    PENDMSG.push('最佳对焦（变焦镜头）：' + (atNode ? '当前正好在文件焦段 ' + nodeName(zm, nb.w < 0.5 ? nb.a : nb.b) + '，用它自己的对焦凸轮'
+      : '当前焦段约 ' + fmt(-1 / p, 1) + ' mm，在 ' + nodeName(zm, nb.a) + ' 与 ' + nodeName(zm, nb.b) + ' 之间，对焦凸轮按两侧焦段插值') +
+      '，移动 ' + cam.surf.map(function (k) { return 'S' + (k + 1); }).join(' / ') + ' 对到 ' + distTxt(r.D) +
+      '，轴上 RMS ' + (isFinite(r.r0) ? r.r0.toFixed(2) : '—') + ' → ' + r.rB.toFixed(2) + ' µm，像面不动。' +
+      (r.out ? '⚠ 这个物距已经超出文件给出的对焦行程，间隔是外推出来的。' : ''));
+    renderLDE();
+    return true;
+  }
+  /* 变焦到焦距 f（对到无限远时的 EFL），再对到当前物距 */
+  function zoomTo(fIn) {
+    var cp = camNow();
+    if (cp && !cp.why) { camZoomTo(cp, fIn); return; }
+    var zm = zoomModelNow();
+    if (!zm || zm.why) {
+      PENDMSG.push('变焦：' + (zm && zm.why ? zm.why : '这颗镜头不是变焦镜头（多重结构里没有两个以上物距无限远的焦段），或插删过面、和文件的结构对不上') + '。');
+      schedule(0); return;
+    }
+    if (!(fIn > 0) || !isFinite(fIn)) { PENDMSG.push('变焦：焦距要填正数（mm），范围 ' + fmt(zm.fmin, 2) + '–' + fmt(zm.fmax, 2) + '。'); schedule(0); return; }
+    zoomCams(zm);
+    var f = Math.min(zm.fmax, Math.max(zm.fmin, fIn)), clampTxt = '';
+    if (Math.abs(f - fIn) > 1e-9)
+      clampTxt = '填的 ' + (+fIn.toFixed(3)) + ' mm 超出文件给出的变焦范围 ' + fmt(zm.fmin, 2) + '–' + fmt(zm.fmax, 2) + ' mm，按 ' + fmt(f, 2) + ' mm 算。';
+    // 离文件焦段不到 0.05%：就是那个焦段，直接用原始数据（填的是 15.11，文件是 15.1139，不该插出另一套间隔）
+    var nodeQ = -1;
+    zm.nodes.forEach(function (n, q) { if (Math.abs(f - n.f) <= 5e-4 * n.f) nodeQ = q; });
+    var atNode = nodeQ >= 0, p;
+    if (atNode) { f = zm.nodes[nodeQ].f; p = zm.x[nodeQ]; }
+    else p = zoomSolve(zm, f);
+    var nb = zoomNb(zm, p), A = zm.nodes[nb.a], B = zm.nodes[nb.b];
+    if (atNode) nb = { a: nodeQ, b: nodeQ, w: 0 }, A = B = zm.nodes[nodeQ];
+    // 各焦段 F/# 不同（变光圈变焦）时跟着插值
+    var fnoNew = null, cfg = state.cfgs && state.cfgs[state.cfg];
+    if (A.fno != null && B.fno != null && Math.abs(A.fno - B.fno) > 1e-9) fnoNew = A.fno + nb.w * (B.fno - A.fno);
+    else if (atNode && A.fno != null && Math.abs(A.fno - (+$('fno').value)) > 1e-9 && zm.nodes.some(function (n) { return n.fno !== A.fno; })) fnoNew = A.fno;
+    var optZ = Object.assign({}, last.opt); if (fnoNew != null) optZ.fno = fnoNew;
+    var optInf = Object.assign({}, optZ, { objDist: Infinity });
+    var D0 = last.opt.objDist, finD = isFinite(D0) && D0 > 0 && D0 < 1e7;
+    /* 焦距校正：zoomSolve 里对焦用的是七条光线的快速判据，最后一步用的是「轴上 RMS 最小」，
+       两者差一点对焦群就差一点，EFL 能差 0.005 mm。这里用最后同一判据在无限远上量 EFL，割线修正凸轮参数 */
+    var infAt = function (pp) {
+      var Zp = zoomGaps(zm, pp), cp = zoomCam(zm, pp), rr = cp && camSearch(cp, withT(last.surfaces, Zp), optInf), g = Zp;
+      if (rr) { g = Object.assign({}, Zp); cp.surf.forEach(function (k, q) { g[k] = rr.tv[q]; }); }
+      return { p: pp, Z: Zp, cam: cp, r: rr, efl: Math.abs(OPT.buildSystem(withT(last.surfaces, g), optInf).efl) };
+    };
+    var E = null;
+    if (!atNode) {
+      E = infAt(p);
+      var slope = (zoomEfl(zm, p + 1e-6) - zoomEfl(zm, p - 1e-6)) / 2e-6;
+      for (var it = 0; it < 5 && E.r && isFinite(slope) && slope !== 0 && Math.abs(E.efl - f) > 2e-6 * f; it++) E = infAt(E.p - (E.efl - f) / slope);
+      p = E.p;
+    }
+    var Z = zoomGaps(zm, p);
+    if (atNode) { Z = {}; zm.keys.forEach(function (k) { Z[k] = zm.nodes[nodeQ].gm[k]; }); }
+    // 变焦间隔写回（对焦群那几个间隔由下面的对焦覆盖）
+    zm.zk.forEach(function (k) {
+      state.rows[k].T = fmtT(Z[k]);
+      if (cfg && cfg.thi) cfg.thi[k] = +Z[k].toFixed(6);
+    });
+    var sur1 = withT(last.surfaces, Z), surF = sur1, focusTxt = '';
+    var cam = zoomCam(zm, p), r = null;
+    if (atNode && !finD) { if (cam) zm.fk.forEach(function (k) { state.rows[k].T = fmtT(Z[k]); if (cfg && cfg.thi) cfg.thi[k] = +Z[k].toFixed(6); }); }
+    else if (cam) r = (!finD && E && E.r) ? E.r : camSearch(cam, sur1, optZ);
+    if (r) {
+      camApply(cam, r.tv);
+      var tvm = {}; cam.surf.forEach(function (k, q) { tvm[k] = r.tv[q]; });
+      surF = withT(sur1, tvm);
+      focusTxt = '再沿' + (atNode ? '这个焦段自己的' : '两侧焦段插出来的') + '对焦群（' + cam.surf.map(function (k) { return 'S' + (k + 1); }).join(' / ') +
+        '）对到 ' + distTxt(r.D) + '，轴上 RMS ' + (isFinite(r.r0) ? r.r0.toFixed(2) : '—') + ' → ' + r.rB.toFixed(2) + ' µm，像面不动。' +
+        (r.out ? (finD ? '⚠ 这个物距超出文件给出的对焦行程，对焦间隔是外推的。'
+          : '⚠ 为了把插值带来的离焦对回来，对焦群走过了文件对焦行程的无限远端，说明这里插出来的镜组位置偏得不小。') : '');
+    }
+    if (fnoNew != null) { $('fno').value = +fnoNew.toFixed(4); if (cfg) cfg.fno = +fnoNew.toFixed(4); }
+    // 渐晕跟着焦段走
+    var vigTxt = '';
+    if (state.vigAuto && state.vigAuto[state.cfg]) {
+      var st = readState(), sysN = OPT.buildSystem(surF, optZ), AV = autoVigTable(sysN, optZ, st);
+      if (AV) {
+        state.vigAuto[state.cfg] = { f: AV.fr, vuy: AV.v.vuy, vly: AV.v.vly, vux: AV.v.vux, vlx: AV.v.vlx, aim: !!st.aim,
+          note: '渐晕随变焦按真实通光重算（' + AV.v.nAp + ' 个通光面，' + VIGN + ' 个视场点）。' };
+        vigTxt = '渐晕在新焦段上按真实通光重算。';
+      } else {
+        var rec = curRec(), ta = rec && rec.vigAuto && rec.vigAuto[A.i], tb = rec && rec.vigAuto && rec.vigAuto[B.i];
+        if (ta && tb) { var tl = vigLerp(ta, tb, nb.w); tl.aim = ta.aim; state.vigAuto[state.cfg] = tl; vigTxt = '渐晕表按两侧焦段插值（这版通光算不出）。'; }
+      }
+    } else if (cfg && state.cfgs0[A.i].vig && state.cfgs0[B.i].vig) {
+      cfg.vig = vigLerp(state.cfgs0[A.i].vig, state.cfgs0[B.i].vig, nb.w);
+      vigTxt = '文件的渐晕系数按两侧焦段插值。';
+    }
+    var eflF = Math.abs(OPT.buildSystem(surF, optZ).efl), fin = finD;
+    PENDMSG.push('变焦到 ' + fmt(f, 2) + ' mm：' + clampTxt +
+      (atNode ? '正好是文件里的焦段 ' + nodeName(zm, nodeQ) + '，用的是原始数据' + (finD ? '。' : '，无限远不用再对焦。')
+        : '在 ' + nodeName(zm, nb.a) + ' 与 ' + nodeName(zm, nb.b) + ' 之间，按 1/f 自然样条插值变焦间隔 ' +
+          zm.zk.map(function (k) { return 'S' + (k + 1); }).join(' / ') + '，焦距按对到无限远时的 EFL 精确反解。') +
+      focusTxt + (fin ? '对到近处时 EFL = ' + fmt(eflF, 3) + ' mm（对焦呼吸；对到无限远时正好 ' + fmt(f, 2) + '）。' : '') +
+      (fnoNew != null ? 'F/# 按两侧焦段插值为 ' + (+fnoNew.toFixed(3)) + '。' : '') + vigTxt +
+      (atNode ? '' : B.f / A.f >= 1.5
+        // 尼康 Z 24-70 II 只给了 24.7 / 50 / 67.9：30 mm 处边缘 RMS 57 µm，两端焦段只有 14 / 20 µm，多半是凸轮猜偏了
+        ? '⚠ 两侧这两个文件焦段相距 ' + (B.f / A.f).toFixed(1) + ' 倍、中间没有别的焦段，凸轮只能靠 ' + zm.nodes.length +
+          ' 个点猜，插出来的镜组位置误差会比较大：轴上能对准，离轴画质可能明显偏低，只宜看趋势。'
+        : '⚠ 中间焦段的镜组位置是插值估计（文件只给了 ' + zm.nodes.length + ' 个焦段），轴上能对准，离轴画质仅供参考。'));
+    if (!r && !(atNode && !finD)) planeFocus(zm.fk.length ? '插不出这个焦段的对焦凸轮' : '文件里没有近摄结构，认不出对焦群', surF);
+    renderLDE(); syncVigBtn(); schedule(0);
+  }
+
+  /* ================= 变焦凸轮数据（ZoomCam_Test）=================
+     镜头记录带 zoomcam（tools/camattach.js 挂的，或在页面上拖入 <tag>_凸轮数据.json）时，变焦和对焦都按它走，
+     不再从多重结构里猜：
+       · 变焦：各间隔在 ∞ 节点上对 x = −1/f 做自然样条（节点是 CODE V 逐点评价过的真实状态，161 个，间距 0.5°），
+         x 用割线修到「本页算的 EFL 正好等于填的焦距」——仍在凸轮曲线上，只是找准参数；
+         ∞ 位置直接用节点，不按轴上 RMS 重新对焦（凸轮数据自己写的 refocus_inf = false：它是按 MTF 判据求的）。
+       · 对焦：对焦间隔 = 节点样条的 ∞ 位置 + 对焦表的增量 dt。对焦表每个焦段一行，
+         行内按 v = 1/D 线性（D = 物面到像面，相机对焦距离的定义；本页「物距」是物面到第 1 面，D = 物距 + 第 1 面到像面），
+         行与行之间按 zu = ln(f/fW)/ln(fT/fW) 线性——都照凸轮数据的约定，别按 x 插（70-200 GM II 留一法按 x 插误差 3.47 mm）。
+         比表里最近那个物距还近、但没过这个焦段的最近对焦距离：沿最后一段外推，提示；比最近对焦距离还近：夹到最近对焦距离。
+       · F/#：凸轮数据的孔径模型是「光阑物理大小固定」，近距时工作 F/# 变大。表里每个点带工作 F/#，
+         本页按「新 / 旧」的比例缩放当前 F/#——全开时就是表里的值，收过光圈的按同样比例跟着变。 */
+  var CAMKEY = 'lensbench.cam', CAMCACHE = (typeof WeakMap !== 'undefined') ? new WeakMap() : null;
+  function camPrep(C) {
+    var P = CAMCACHE && CAMCACHE.get(C);
+    if (P) return P;
+    var x = C.nodes.map(function (n) { return n.x; });
+    var spl = C.keys.map(function (k, q) { return natSpline(x, C.nodes.map(function (n) { return n.t[q]; })); });
+    var fk = C.focus ? C.focus.surf.slice() : [];
+    var zk = C.keys.filter(function (k, q) {
+      return fk.indexOf(k) < 0 && C.nodes.some(function (n) { return Math.abs(n.t[q] - C.nodes[0].t[q]) > 1e-9; });
+    });
+    var rows = C.focus ? C.focus.rows.slice().sort(function (a, b) { return a.zu - b.zu; }) : [];
+    P = { C: C, x: x, spl: spl, keys: C.keys, fk: fk, zk: zk, rows: rows,
+          fmin: C.nodes[0].f, fmax: C.nodes[C.nodes.length - 1].f,
+          fW: C.fW || C.nodes[0].f, fT: C.fT || C.nodes[C.nodes.length - 1].f };
+    if (CAMCACHE) CAMCACHE.set(C, P);
+    return P;
+  }
+  function camNow() {
+    var C = state.zoomcam;
+    if (!C || !last) return null;
+    if (last.surfaces.length !== state.rows.length || Math.max.apply(null, C.keys) >= state.rows.length)
+      return { why: '插删过面，凸轮数据里的面号和表格对不上' };
+    return camPrep(C);
+  }
+  function camGaps(P, x) { var g = {}; P.keys.forEach(function (k, q) { g[k] = P.spl[q](x); }); return g; }
+  function camClampX(P, x) { return Math.min(P.x[P.x.length - 1], Math.max(P.x[0], x)); }
+  function camAngle(P, x) {
+    var n = P.x.length, j = 0, N = P.C.nodes;
+    if (N[0].a == null) return null;
+    if (x >= P.x[n - 1]) return N[n - 1].a; if (x <= P.x[0]) return N[0].a;
+    while (j < n - 2 && x > P.x[j + 1]) j++;
+    return N[j].a + (x - P.x[j]) / (P.x[j + 1] - P.x[j]) * (N[j + 1].a - N[j].a);
+  }
+  /* x 使本页算的 EFL（对到无限远）正好等于 f：从 −1/f 出发，df/dx = f² 做两三步牛顿 */
+  function camSolveX(P, f, sur, opt) {
+    var optInf = Object.assign({}, opt, { objDist: Infinity, defocus: 0 }), x = camClampX(P, -1 / f), e = 0;
+    for (var it = 0; it < 4; it++) {
+      e = Math.abs(OPT.buildSystem(withT(sur, camGaps(P, x)), optInf).efl);
+      if (!isFinite(e) || Math.abs(e - f) < 1e-7 * f) break;
+      x = camClampX(P, x - (e - f) / (f * f));
+    }
+    return x;
+  }
+  /* 当前表格的变焦间隔落在凸轮的哪一点：只看变焦间隔（对焦间隔两侧在对焦时也会动），最小二乘 */
+  function camEstimate(P, gm) {
+    var ks = P.zk.length ? P.zk : P.keys, qs = ks.map(function (k) { return P.keys.indexOf(k); });
+    var E = function (x) { var s = 0; qs.forEach(function (q, i) { var d = P.spl[q](x) - gm[ks[i]]; s += d * d; }); return s; };
+    var lo = P.x[0], hi = P.x[P.x.length - 1], best = lo, bv = Infinity, i, M = 400;
+    for (i = 0; i <= M; i++) { var x = lo + (hi - lo) * i / M, e = E(x); if (e < bv) { bv = e; best = x; } }
+    var a = Math.max(lo, best - (hi - lo) / M), b = Math.min(hi, best + (hi - lo) / M), g = (Math.sqrt(5) - 1) / 2;
+    var x1 = b - g * (b - a), x2 = a + g * (b - a), e1 = E(x1), e2 = E(x2);
+    for (i = 0; i < 60; i++) {
+      if (e1 < e2) { b = x2; x2 = x1; e2 = e1; x1 = b - g * (b - a); e1 = E(x1); }
+      else { a = x1; x1 = x2; e1 = e2; x2 = a + g * (b - a); e2 = E(x2); }
+    }
+    var xb = e1 < e2 ? x1 : x2;
+    return { x: xb, rms: Math.sqrt(E(xb) / qs.length) };
+  }
+  /* 表格现在的状态在凸轮上对应什么：变焦间隔反推焦距，对焦间隔（减去该焦段的 ∞ 位置）反推对焦距离 D。
+     旧的工作 F/# 按这个状态从表里取，F/# 的比例缩放就总和表格一致，不依赖上一次操作记下的东西（刷新、撤销后也对） */
+  function camState(P) {
+    var gm = {}; P.keys.forEach(function (k) { gm[k] = last.surfaces[k].T; });
+    var est = camEstimate(P, gm), f = -1 / est.x, Z = camGaps(P, est.x);
+    var res = { x: est.x, f: f, rms: est.rms, D: Infinity, frms: 0 };
+    if (!P.rows.length) return res;
+    var inf0 = camFocusAt(P, f, Infinity), mfd = inf0.mfd || 300;
+    var E = function (v) {
+      var F = camFocusAt(P, f, v > 0 ? 1 / v : Infinity), s = 0;
+      P.fk.forEach(function (k) { var d = Z[k] + F.dt[k] - gm[k]; s += d * d; });
+      return s;
+    };
+    var hi = 1 / mfd, best = 0, bv = E(0), i, M = 200;
+    for (i = 1; i <= M; i++) { var v = hi * i / M, e = E(v); if (e < bv) { bv = e; best = v; } }
+    var a = Math.max(0, best - hi / M), b = Math.min(hi, best + hi / M), g = (Math.sqrt(5) - 1) / 2;
+    var x1 = b - g * (b - a), x2 = a + g * (b - a), e1 = E(x1), e2 = E(x2);
+    for (i = 0; i < 50; i++) {
+      if (e1 < e2) { b = x2; x2 = x1; e2 = e1; x1 = b - g * (b - a); e1 = E(x1); }
+      else { a = x1; x1 = x2; e1 = e2; x2 = a + g * (b - a); e2 = E(x2); }
+    }
+    var vb = e1 < e2 ? x1 : x2; if (E(0) <= Math.min(e1, e2) + 1e-18) vb = 0;
+    res.D = vb > 1e-12 ? 1 / vb : Infinity; res.frms = Math.sqrt(E(vb) / P.fk.length);
+    return res;
+  }
+  function camRowAt(r, v) {                     // 一行对焦表在 v 处：分段线性，超出最近那个点沿最后一段外推
+    var V = r.v, n = V.length, j = 0, ex = false;
+    if (n === 1) return { dt: r.dt[0].slice(), wf: r.wf[0], ex: false };
+    if (v > V[n - 1] * (1 + 1e-7)) { j = n - 2; ex = true; } else { if (v > V[n - 1]) v = V[n - 1]; while (j < n - 2 && v > V[j + 1]) j++; }
+    var w = (v - V[j]) / (V[j + 1] - V[j]);
+    var wf = (r.wf[j] != null && r.wf[j + 1] != null) ? r.wf[j] + w * (r.wf[j + 1] - r.wf[j]) : null;
+    return { dt: r.dt[j].map(function (a, q) { return a + w * (r.dt[j + 1][q] - a); }), wf: wf, ex: ex };
+  }
+  /* 焦距 f、对焦距离 D（物面到像面）处的对焦增量。返回 { dt{k}, wf, D（夹过之后）, clamp, ex, mfd } */
+  function camFocusAt(P, f, D) {
+    var R = P.rows; if (!R.length) return null;
+    var zu = Math.log(f / P.fW) / Math.log(P.fT / P.fW), a = 0;
+    if (zu >= R[R.length - 1].zu) a = R.length - 2; else if (zu > R[0].zu) while (a < R.length - 2 && zu > R[a + 1].zu) a++;
+    var b = Math.min(a + 1, R.length - 1), w = R.length < 2 ? 0 : Math.min(1, Math.max(0, (zu - R[a].zu) / (R[b].zu - R[a].zu)));
+    var mfd = (R[a].mfd && R[b].mfd) ? R[a].mfd + w * (R[b].mfd - R[a].mfd) : null, clamp = false;
+    if (isFinite(D) && D > 0 && mfd && D < mfd * (1 - 1e-9)) { D = mfd; clamp = true; }
+    var v = (isFinite(D) && D > 0) ? 1 / D : 0;
+    var A = camRowAt(R[a], v), B = camRowAt(R[b], v), dt = {};
+    P.fk.forEach(function (k, q) { dt[k] = A.dt[q] + w * (B.dt[q] - A.dt[q]); });
+    var wf = (A.wf != null && B.wf != null) ? A.wf + w * (B.wf - A.wf) : null;
+    return { dt: dt, wf: wf, D: D, clamp: clamp, ex: A.ex || B.ex, mfd: mfd, zu: zu };
+  }
+  function camTrack(sur, gm) { var s = 0; sur.forEach(function (q, k) { s += (gm[k] != null ? gm[k] : q.T); }); return s; }
+  function camSrcTxt(C) {
+    return '凸轮数据 ' + (C.src && C.src.tag || '') + '（' + (C.src && C.src.engine || '') + '，' + C.nodes.length + ' 个 ∞ 节点' +
+      (C.focus ? '，对焦表 ' + C.focus.rows.length + ' 个焦段' : '') + '）';
+  }
+  function camGroupsOf(C, kind) {
+    return (C.groups || []).filter(function (g) { return kind === 'focus' ? g.focus && g.focus !== 'none' : g.zoom && g.zoom !== 'fixed'; })
+      .map(function (g) { return g.name; }).join(' / ');
+  }
+  /* 写回：间隔写进表格和当前结构；对焦到 objd（null = 按当前物距）。返回说明文字 */
+  function camApplyState(P, x, Z, objdOverride) {
+    var cfg = state.cfgs && state.cfgs[state.cfg];
+    var put = function (k, v) { state.rows[k].T = fmtT(v); if (cfg && cfg.thi) cfg.thi[k] = +v.toFixed(6); };
+    P.keys.forEach(function (k) { put(k, Z[k]); });
+    var od = last.opt.objDist, fin = isFinite(od) && od > 0 && od < 1e7, txt = '', F = null;
+    var f = -1 / x;
+    if (fin && P.rows.length) {
+      var D = od + camTrack(last.surfaces, Z);
+      F = camFocusAt(P, f, D);
+      P.fk.forEach(function (k) { put(k, Z[k] + F.dt[k]); });
+      txt = '对焦组（' + (camGroupsOf(P.C, 'focus') || P.fk.map(function (k) { return 'S' + (k + 1); }).join(' / ')) + '）按对焦表对到 ' +
+        distTxt(od) + '（物面到像面 ' + fmt(F.clamp ? F.D : D, 1) + ' mm），间隔增量 ' +
+        P.fk.map(function (k) { return 'S' + (k + 1) + ' ' + (F.dt[k] >= 0 ? '+' : '') + F.dt[k].toFixed(3); }).join('、') + ' mm。' +
+        (F.clamp ? '⚠ 比这个焦段的最近对焦距离（物面到像面 ' + fmt(F.mfd, 0) + ' mm）还近，按最近对焦距离算。' : '') +
+        (F.ex ? '⚠ 对焦表在这个焦段没解到这么近，' + (F.clamp ? '到最近对焦距离的' : '') + '行程和工作 F/# 是沿最后一段外推的。' : '');
+    } else if (P.rows.length) txt = '对焦组在凸轮上的 ∞ 位置（凸轮数据按 MTF 判据求的，不再按轴上 RMS 重新对焦）。';
+    return { txt: txt, F: F, fin: fin };
+  }
+  /* F/# 跟着对焦表的工作 F/# 按比例走（光阑物理大小固定）；孔径定义不是「工作 F/#」时不动 */
+  function camFno(P, S0, F, fNew) {
+    if ($('apmode').value !== 'fno') return '';
+    var o = camFocusAt(P, S0.f, S0.D), nw = F || camFocusAt(P, fNew, Infinity);
+    if (!o || !nw || o.wf == null || nw.wf == null) return '';
+    var cur = +$('fno').value; if (!(cur > 0)) return '';
+    var nv = cur * nw.wf / o.wf;
+    if (Math.abs(nv - cur) < 5e-4) return '';
+    $('fno').value = +nv.toFixed(4);
+    var cfg = state.cfgs && state.cfgs[state.cfg]; if (cfg) cfg.fno = +nv.toFixed(4);
+    return '工作 F/# ' + (+cur.toFixed(3)) + ' → ' + (+nv.toFixed(3)) + '（光阑物理大小固定，按对焦表的工作 F/# 比例）。';
+  }
+  function camVig(optZ, surF) {
+    if (!(state.vigAuto && state.vigAuto[state.cfg])) return '';
+    var st = readState(), AV = autoVigTable(OPT.buildSystem(surF, optZ), optZ, st);
+    if (!AV) return '';
+    state.vigAuto[state.cfg] = { f: AV.fr, vuy: AV.v.vuy, vly: AV.v.vly, vux: AV.v.vux, vlx: AV.v.vlx, aim: !!st.aim,
+      note: '渐晕随变焦按真实通光重算（' + AV.v.nAp + ' 个通光面，' + VIGN + ' 个视场点）。' };
+    return '渐晕在新焦段上按真实通光重算。';
+  }
+  function camZoomTo(P, fIn) {
+    if (!(fIn > 0) || !isFinite(fIn)) { PENDMSG.push('变焦：焦距要填正数（mm），范围 ' + fmt(P.fmin, 2) + '–' + fmt(P.fmax, 2) + '。'); schedule(0); return; }
+    var f = Math.min(P.fmax, Math.max(P.fmin, fIn)), clampTxt = '';
+    if (Math.abs(f - fIn) > 1e-9) clampTxt = '填的 ' + (+fIn.toFixed(3)) + ' mm 超出凸轮范围 ' + fmt(P.fmin, 2) + '–' + fmt(P.fmax, 2) + ' mm，按 ' + fmt(f, 2) + ' mm 算。';
+    var S0 = camState(P);
+    var x = camSolveX(P, f, last.surfaces, last.opt), Z = camGaps(P, x), ang = camAngle(P, x);
+    var A = camApplyState(P, x, Z);
+    var fnoTxt = camFno(P, S0, A.F, f);
+    var optZ = Object.assign({}, last.opt, { fno: +$('fno').value });
+    var gF = {}; P.keys.forEach(function (k) { gF[k] = parseFloat(state.rows[k].T); });
+    var surF = withT(last.surfaces, gF), vigTxt = camVig(optZ, surF);
+    var eflF = Math.abs(OPT.buildSystem(surF, optZ).efl);
+    PENDMSG.push('变焦到 ' + fmt(f, 2) + ' mm（' + camSrcTxt(P.C) + '）：' + clampTxt +
+      (ang != null ? '变焦环 ' + fmt(ang, 1) + '°' + (P.C.rot ? ' / ' + P.C.rot + '°' : '') + '，' : '') +
+      '变焦组（' + (camGroupsOf(P.C, 'zoom') || P.zk.map(function (k) { return 'S' + (k + 1); }).join(' / ')) + '）按 ∞ 节点样条取位置。' +
+      A.txt + (A.fin ? '对到近处时 EFL = ' + fmt(eflF, 3) + ' mm（对焦呼吸；对到无限远时正好 ' + fmt(f, 2) + '）。' : '') + fnoTxt + vigTxt);
+    renderLDE(); syncVigBtn(); schedule(0);
+  }
+  /* 「最佳对焦」：先认出当前在凸轮的哪一点，再按对焦表对到当前物距（不做 RMS 搜索——对焦位置就是镜头的对焦表） */
+  function camFocusNow(P) {
+    var gm = {}; P.keys.forEach(function (k) { gm[k] = last.surfaces[k].T; });
+    if (!P.rows.length) return false;
+    var S0 = camState(P), est = { x: S0.x, rms: S0.rms };
+    var x = est.x, Z = camGaps(P, x), cfg = state.cfgs && state.cfgs[state.cfg];
+    // 只动对焦间隔：变焦间隔保持表格里的值（用户可能手改过，那份偏差留给用户看）
+    var Zf = Object.assign({}, gm); P.fk.forEach(function (k) { Zf[k] = Z[k]; });
+    var od = last.opt.objDist, fin = isFinite(od) && od > 0 && od < 1e7, F = null, txt;
+    var put = function (k, v) { state.rows[k].T = fmtT(v); if (cfg && cfg.thi) cfg.thi[k] = +v.toFixed(6); };
+    if (fin) {
+      F = camFocusAt(P, -1 / x, od + camTrack(last.surfaces, Zf));
+      P.fk.forEach(function (k) { put(k, Z[k] + F.dt[k]); });
+      txt = '按对焦表对到 ' + distTxt(od) + '：' + P.fk.map(function (k) { return 'S' + (k + 1) + ' ' + (F.dt[k] >= 0 ? '+' : '') + F.dt[k].toFixed(3); }).join('、') + ' mm（相对 ∞）。' +
+        (F.clamp ? '⚠ 比这个焦段的最近对焦距离（物面到像面 ' + fmt(F.mfd, 0) + ' mm）还近，按最近对焦距离算。' : '') +
+        (F.ex ? '⚠ 对焦表在这个焦段没解到这么近，' + (F.clamp ? '到最近对焦距离的' : '') + '行程和工作 F/# 是沿最后一段外推的。' : '');
+    } else {
+      P.fk.forEach(function (k) { put(k, Z[k]); });
+      txt = '对到无限远：对焦组回到凸轮上的 ∞ 位置。';
+    }
+    var fnoTxt = camFno(P, S0, F, -1 / x);
+    PENDMSG.push('最佳对焦（' + camSrcTxt(P.C) + '）：当前在凸轮上约 ' + fmt(-1 / x, 2) + ' mm' +
+      (camAngle(P, x) != null ? '（变焦环 ' + fmt(camAngle(P, x), 1) + '°）' : '') + '，' + txt + fnoTxt +
+      (est.rms > 0.02 ? '⚠ 表格里的变焦间隔和凸轮差 ' + (est.rms * 1000).toFixed(0) + ' µm（均方根），手改过变焦间隔？对焦按最接近的凸轮点算。' : ''));
+    renderLDE();
+    return true;
+  }
+  /* 页面上拖入 / 选择 <tag>_凸轮数据.json：对账通过才挂到当前镜头 */
+  function camAttach(J, fname) {
+    var C;
+    try { C = LENSIO.camCompact(J); } catch (err) { showMsgs(['凸轮数据读不了：' + err.message]); return; }
+    if (!last) return;
+    if (Math.max.apply(null, C.keys) >= state.rows.length) { showMsgs(['凸轮数据的间隔面号超出当前镜头的面数（' + state.rows.length + ' 面），不是这颗镜头的凸轮。']); return; }
+    var P = camPrep(C), sur = last.surfaces, optInf = Object.assign({}, last.opt, { objDist: Infinity, defocus: 0 });
+    var chk = [], worst = 0;
+    var inf = function (c) { var D = c.obj; return D == null || !isFinite(D) || D <= 0 || D >= 1e7; };
+    var cfs = (state.cfgs0 && state.cfgs0.length && state.T0 && state.T0.length === sur.length) ? state.cfgs0.filter(inf) : [];
+    var one = function (gm, name) {
+      var s = withT(sur, gm), f = Math.abs(OPT.buildSystem(s, optInf).efl), Z = camGaps(P, camClampX(P, -1 / f));
+      var d = Math.max.apply(null, P.keys.map(function (k) { return Math.abs(Z[k] - s[k].T); }));
+      worst = Math.max(worst, d); chk.push(name + ' ' + fmt(f, 2) + ' mm 差 ' + (d * 1000).toFixed(1) + ' µm');
+    };
+    if (cfs.length) cfs.forEach(function (c) { var gm = {}; P.keys.forEach(function (k) { gm[k] = c.thi && c.thi[k] != null ? +c.thi[k] : state.T0[k]; }); one(gm, c.title); });
+    else { var gm = {}; P.keys.forEach(function (k) { gm[k] = sur[k].T; }); one(gm, '当前表格'); }
+    if (worst > 0.02) {
+      showMsgs(['凸轮数据 ' + fname + ' 和当前镜头对不上：按各 ∞ 结构自己的焦距在凸轮上取间隔，最大差 ' + (worst * 1000).toFixed(0) +
+        ' µm（门槛 20 µm）——凸轮是按另一份处方算的，没有挂。逐个：' + chk.join('；') + '。']); return;
+    }
+    state.zoomcam = C; state.camUser = true;
+    try { sessionStorage.setItem(CAMKEY, JSON.stringify({ lens: camLensKey(), tag: C.src.tag, C: C })); } catch (e) { }
+    PENDMSG.push('已挂上 ' + camSrcTxt(C) + '，来自 ' + fname + '：和当前镜头的 ∞ 结构逐个对账，最大差 ' + (worst * 1000).toFixed(1) +
+      ' µm（' + chk.join('；') + '）。LDM 顶部「焦距 mm」按这份凸轮变焦，「最佳对焦」按它的对焦表。' +
+      (C.warnings.length ? '凸轮数据自带的提示：' + C.warnings.join('；') + '。' : '') +
+      (C.check && C.check.length ? '本页检查：' + C.check.join('；') + '。' : ''));
+    schedule(0);
+  }
+  function camLensKey() { return state.libId ? 'lib:' + state.libId : (state.imp && IMPREC ? 'imp:' + libSig(IMPREC) : 'tx'); }
+  $('zoomBtn').addEventListener('click', function () {
+    if (!last) return;
+    var btn = this, label = btn.textContent, f = parseFloat($('zoomF').value);
+    btn.textContent = '计算中…'; btn.disabled = true;
+    setTimeout(function () {
+      try { zoomTo(f); }
+      finally { btn.textContent = label; btn.disabled = false; }
+    }, 30);
+  });
+  $('zoomF').addEventListener('keydown', function (e) { if (e.key === 'Enter') { e.preventDefault(); $('zoomBtn').click(); } });
   $('focusBtn').addEventListener('click', function () {
     if (!last) return;
     var btn = this, label = btn.textContent;
     btn.textContent = '搜索中…'; btn.disabled = true;
     setTimeout(function () {
       try {
-        // 插删过面，下标对不上文件原样的结构，凸轮不可用
-        var cam = (state.T0 && state.T0.length === state.rows.length && last.surfaces.length === state.rows.length)
-          ? focusCam(state.cfgs0, state.T0, state.cfg) : null;
-        var done = cam && !cam.why && camFocus(cam);
-        if (!done) planeFocus(cam && cam.why ? cam.why : (state.cfgs0 && state.cfgs0.length > 1 ? '插删过面，和文件的结构对不上' : null));
+        // 变焦镜头：从表里的变焦间隔反推当前焦段，用相邻两个焦段的对焦凸轮插出这个焦段的；正好在文件焦段上时就是那一条
+        var done = zoomFocus();
+        if (!done) {
+          // 插删过面，下标对不上文件原样的结构，凸轮不可用
+          var cam = (state.T0 && state.T0.length === state.rows.length && last.surfaces.length === state.rows.length)
+            ? focusCam(state.cfgs0, state.T0, state.cfg) : null;
+          done = cam && !cam.why && camFocus(cam);
+          if (!done) planeFocus(cam && cam.why ? cam.why : (state.cfgs0 && state.cfgs0.length > 1 ? '插删过面，和文件的结构对不上' : null));
+        }
       } finally {
         btn.textContent = label; btn.disabled = false;
         schedule(0);
@@ -2133,6 +2986,16 @@
      取 21 个视场点（0…最大视场，每 5% 一个）：线性插值误差 < 1% 瞳宽，
      而常用的 3 / 6 / 11 / 21 个视场采样点正好落在网格上，根本不用插值。 */
   var VIGN = 21;
+  /* 按真实通光算一张渐晕表（CODE V SET VIGNETTING）：21 个视场点，存视场占比。算不出（没有写死的通光）返回 null */
+  function autoVigTable(sys, opt, st) {
+    var lam = opt.lambdas[opt.primary].nm / 1000, fr = [], ths = [];
+    for (var i = 0; i < VIGN; i++) {
+      var f = i / (VIGN - 1); fr.push(f);
+      ths.push(st.fmode === 'height' ? OPT.angleForHeight(sys, st.fov * f, lam) : st.fov * f);
+    }
+    var v = OPT.setVig(sys, Object.assign({}, opt, { vigFields: ths, sdAp: state.sdAp }));
+    return v ? { v: v, fr: fr } : null;
+  }
   function syncVigBtn() {
     var on = !!(state.vigAuto && state.vigAuto[state.cfg]), b = $('vigBtn');
     if (!b || b.disabled) return;
@@ -2155,13 +3018,7 @@
     btn.textContent = '计算中…'; btn.disabled = true;
     setTimeout(function () {
       try {
-        var st = readState(), lam = last.opt.lambdas[last.opt.primary].nm / 1000;
-        var fr = [], ths = [], i;
-        for (i = 0; i < VIGN; i++) {
-          var f = i / (VIGN - 1); fr.push(f);
-          ths.push(st.fmode === 'height' ? OPT.angleForHeight(last.sys, st.fov * f, lam) : st.fov * f);
-        }
-        var v = OPT.setVig(last.sys, Object.assign({}, last.opt, { vigFields: ths, sdAp: state.sdAp }));
+        var st = readState(), AV = autoVigTable(last.sys, last.opt, st), v = AV && AV.v, fr = AV && AV.fr, i;
         if (!v) {
           PENDMSG.push('一键渐晕没算：这颗镜头没有任何写死的通光（CODE V 的 CIR、Zemax 的固定 DIAM / 浮动通光 FLAP），'
             + '没有孔径就无从判断谁挡住了谁。可以在「半孔径」列直接填上镜片的通光半径，再按一次。');

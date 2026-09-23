@@ -126,6 +126,12 @@ input:focus,select:focus,textarea:focus{outline:2px solid var(--accent);outline-
 .ldmbar .cfgsel{display:inline-flex;align-items:center;height:28px;border:1px solid var(--line);border-radius:6px;background:var(--panel-2);overflow:hidden;flex:0 0 auto}
 .ldmbar .cfgsel > span{font-size:9.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--ink-3);padding:0 8px;border-right:1px solid var(--line);height:100%;display:flex;align-items:center;white-space:nowrap}
 .ldmbar .cfgsel select{border:0;border-radius:0;height:26px;flex:0 0 auto;min-width:120px;width:auto;background:var(--panel-2)}
+.ldmbar .cfgsel input{border:0;border-radius:0;height:26px;width:84px;padding:0 7px;background:var(--panel-2);
+  font-family:"IBM Plex Mono",monospace;font-size:12px;font-variant-numeric:tabular-nums}
+.ldmbar .cfgsel > span i{font-style:normal;text-transform:none;margin-left:3px}   /* 单位不跟着 uppercase 变成 MM */
+.zoomgrp{display:inline-flex;align-items:center;gap:4px;flex:0 0 auto}
+.zoomgrp[hidden]{display:none}
+.zoomgrp .btn.cam{color:var(--accent);border-color:var(--accent);background:var(--accent-soft)}   /* 按凸轮数据变焦 */
 table.lde td.zoo input{color:var(--accent)}
 table.lde td.zoo{box-shadow:inset 2px 0 0 var(--accent)}
 /* ---- 关于：二级页 ---- */
@@ -368,8 +374,9 @@ table.data tbody tr:hover{background:var(--panel-2)}
           <label class="cfgsel"><span>品牌</span><select id="brand" aria-label="镜头品牌"></select></label>
           <select id="ex" aria-label="载入镜头"></select>
           <label class="cfgsel" id="cfgWrap" style="display:none"><span>结构</span><select id="cfg" aria-label="多重结构 / 变焦位置"></select></label>
-          <button class="btn" id="impBtn" type="button">导入 .seq / .zmx</button>
-          <input type="file" id="impFile" accept=".seq,.SEQ,.zmx,.ZMX,.len,.txt" style="display:none">
+          <span class="zoomgrp" id="zoomWrap" hidden><label class="cfgsel"><span>焦距 <i>mm</i></span><input id="zoomF" type="text" inputmode="decimal" autocomplete="off" spellcheck="false" aria-label="目标焦距（mm）"></label><button class="btn" id="zoomBtn" type="button">变焦</button></span>
+          <button class="btn" id="impBtn" type="button" title="导入镜头文件（CODE V .seq / Zemax .zmx）；也可以选 ZoomCam 导出的「凸轮数据.json」，挂到当前镜头上">导入 .seq / .zmx</button>
+          <input type="file" id="impFile" accept=".seq,.SEQ,.zmx,.ZMX,.len,.txt,.json" style="display:none">
         </div>
         <div class="ldmrow">
           <div class="btngrp">
@@ -398,7 +405,9 @@ table.data tbody tr:hover{background:var(--panel-2)}
       <div class="helpwrap" id="ldmHelp" hidden>
         <p class="note"><b>编辑</b>：直接改单元格；点「表面编号」格可把该面设为光阑。</p>
         <p class="note"><b>镜头信息卡</b>（表格下面那块）：上半是<b>标称</b>——专利号（点开是 Google Patents 检索）、型号代码、卡口 / 画幅 / 类型、标称焦距与光圈、发售年份，来自《镜头仿真进度表》，由 <code>tools/specs_import.py</code> 写进 <code>lenses/meta.json</code>；表里没有的镜头（唯卓仕、七工匠等）只有下半。下半是<b>本页按当前状态算出来的</b>：焦距、F/#、总长、后截距、入瞳、最大像高、片数，以及大致性能——轴上 / 边缘 RMS、前两个频率的中心 / 边缘 MTF、边缘通光率、最大畸变。改表格、切结构、改物距都会跟着刷新；标称值不变，两边对不上就是数据本身和产品的差别。信息卡下面那个琥珀色提示框<b>只在有需要处理的事时出现</b>（导入文件的解析警告、找不到的玻璃、最佳对焦 / 一键渐晕的结果、渐晕表与瞄准设置不一致、衍射采样不足等）；每颗镜头的数据来源与录入说明放在表头「专利 / 逆向」徽标的悬停提示里。</p>
-        <p class="note"><b>物面与最佳对焦</b>：物面那一行的厚度就是<b>物距</b>，和顶栏「物距」是同一个量，改哪边都行，写 inf 为无限远；有多重结构时会写回当前结构。改完按<b>最佳对焦</b>：镜头有多个对焦结构时，按<b>镜头自己的对焦群</b>重新对焦——同一焦段、不同物距的几个结构相差的那几个间隔就是对焦群（浮动对焦的几组也一起认出来），把它们按 1/物距 插值成一条对焦凸轮，沿凸轮找<b>轴上 RMS 最小</b>的位置写回表里，<b>像面不动</b>，总长守恒。变焦镜头只用当前焦段的那几个结构，不会把变焦混进来。认不出对焦群（单结构、同物距几组不同间隔、对焦时曲率也在变、插删过面）时退回老办法：移动像面，写进「离焦」。物距超出文件给的对焦行程会提示是外推。</p>
+        <p class="note"><b>物面与最佳对焦</b>：物面那一行的厚度就是<b>物距</b>，和顶栏「物距」是同一个量，改哪边都行，写 inf 为无限远；有多重结构时会写回当前结构。改完按<b>最佳对焦</b>：镜头有多个对焦结构时，按<b>镜头自己的对焦群</b>重新对焦——同一焦段、不同物距的几个结构相差的那几个间隔就是对焦群（浮动对焦的几组也一起认出来），把它们按 1/物距 插值成一条对焦凸轮，沿凸轮找<b>轴上 RMS 最小</b>的位置写回表里，<b>像面不动</b>，总长守恒。变焦镜头按<b>当前所在的焦段</b>对焦：先从表里的变焦间隔反推出焦段，再用相邻两个焦段各自的对焦凸轮插出这个焦段的对焦凸轮——正好在文件焦段上时就是那个焦段自己的凸轮，变焦到中间焦段以后也对得上。认不出对焦群（单结构、同物距几组不同间隔、对焦时曲率也在变、插删过面）时退回老办法：移动像面，写进「离焦」。物距超出文件给的对焦行程会提示是外推。</p>
+        <p class="note"><b>变焦</b>（只在变焦镜头上出现，结构下拉旁边的「焦距 mm」）：填焦距按「变焦」或回车。多重结构里<b>物距无限远、间隔却各不相同</b>的几个结构就是文件给出的几个焦段；各变焦间隔对 <b>1/f 做自然三次样条插值</b>得到变焦凸轮，焦距按<b>对到无限远时的 EFL</b> 精确反解（镜身刻度的意思——对焦群一动 EFL 就跟着变，只看插值结果能差 0.4 mm），再沿插值出来的对焦群按「最佳对焦」同一判据对到当前物距，像面不动；对近处时状态栏的 EFL 会比填的小一点，那是对焦呼吸。各焦段 F/# 不同的跟着插值；渐晕用的是「按通光」的表就在新焦段上按真实通光重算，用文件系数的就在两侧焦段之间插值。<b>中间焦段是估计</b>：文件只给了几个焦段，节点之间真正的凸轮不知道。拿 FE 12-24 GM 的 5 个焦段做留一法（拿掉一个、用其余的预测它，对焦后比画质），1/f 自然样条的 0.7 视场 RMS 平均是真值的 1.6 倍、最差 2.2 倍，按焦距直线插值是 5~11 倍；实际用时节点间距只有留一法的一半，误差更小，但离轴画质仍只供参考；<b>文件焦段稀、相距远时误差会大得多</b>——尼康 Z 24-70 II 只给了 24.7 / 50 / 67.9 三个焦段，插到 30 mm 边缘 RMS 57 µm，两端焦段只有 14 / 20 µm，多半是凸轮猜偏了，提示里会单独警告。填的焦距离文件焦段不到 0.05% 就直接用那个焦段的原始数据。</p>
+        <p class="note"><b>变焦凸轮数据</b>：镜头带凸轮数据时（ZoomCam_Test 导出的 <code>&lt;tag&gt;_凸轮数据.json</code>，镜头库里由 <code>tools/camattach.js</code> 挂上；也可以在当前镜头上按「导入」选这个 .json 现场挂，先和镜头的 ∞ 结构逐个对账，差超过 20 µm 不挂），变焦和对焦都按它走，不再从多重结构里猜：<b>变焦</b>取 ∞ 节点（CODE V 逐点评价过的凸轮，一般 161 个，间距 0.5°）在 x = −1/f 上的样条值，参数修到本页 EFL 正好等于填的焦距；∞ 位置直接用节点、不再按轴上 RMS 重新对焦（凸轮是按 MTF 判据求的）。<b>对焦</b>按对焦表：对焦间隔 = 节点的 ∞ 位置 + 表里的增量，行内按 1/D 线性（D = 物面到像面，本页「物距」加上第 1 面到像面），焦段之间按 ln f 线性；比表里最近的物距还近会外推并提示，比该焦段的最近对焦距离还近就夹到最近对焦距离。<b>F/#</b> 按表里的工作 F/#（光阑物理大小固定）等比例跟着变。「最佳对焦」这时就是查对焦表：先按表格里的变焦间隔认出在凸轮的哪一点，再对到当前物距。信息卡上会多一段「变焦凸轮」，写着数据来源、节点数和当前在凸轮上的焦距与转角。</p>
         <p class="note"><b>半孔径</b>：格子里有数（CODE V 的 CIR 或手填）是<b>硬光阑</b>，追迹时光线超出即被挡。没数的面用<b>灰字</b>显示参考值，不挡光，鼠标停上去看来源：文件里写死的通光（Zemax 固定 DIAM / FLAP，「一键渐晕」和 Spot 按它逐面裁剪）→ 文件的半口径（Zemax 自动 DIAM，只用于画图）→ 本页按光线包络算的画图半径。在灰字格里填数就变成硬光阑。</p>
         <p class="note"><b>多重结构</b>：.seq 里的 <code>ZOO</code> 记录（结构数、各结构标题、逐结构的 FNO / 面厚度 / 曲率 / 渐晕系数）会读进来，用工具栏「结构」下拉切换，<b>随结构变化的格子在表里标了色</b>，改这些格子会写回当前结构。物面厚度（<code>ZOO THI S0</code>）落到顶栏「物距」，因此近摄结构按<b>有限共轭</b>追迹：光线从物点发出而非平行入射，F/# 用像方工作 F/#（由近轴边缘光线角 1/(2|u′|) 反解入瞳），状态栏 RED 给出放大倍率。</p>
         <p class="note"><b>光线瞄准默认开着</b>：归一化瞳坐标只有定义在<b>光阑面</b>上才有意义。关掉的话它落在近轴入瞳上，视场一大瞳像差就把这个参数化整个扭掉——FE 14mm F1.8 GM 的 56.7° 视场上，u = −1…+1 只覆盖光阑的 +0.13…+0.84，主光线（u=0）落在 0.47 处，整束光线跑到光阑上半边，下缘瞳位置和边角 MTF 全错；FE 35mm F1.4 GM 的 32.4° 则是 u = −1 落到光阑外 1.20 倍处。规规矩矩的镜头开不开几乎没差（85 GM II / 55ZA / CODE V 对照实测 MTF 差 ≤ 0.005），代价是追迹慢一些。</p>
@@ -455,7 +464,7 @@ table.data tbody tr:hover{background:var(--panel-2)}
     <!-- ---- 右：Layout + MTF ---- -->
     <div class="viewcol">
       <section class="card">
-        <header><h2>2D Layout</h2><span class="grow"></span><span class="hdrbtns"><button class="hbtn" id="layZoomOut" type="button" title="缩小（滚轮也可以）">−</button><span class="hzoom" id="layZoomLbl" title="当前缩放；拖动平移，双击复位">1.0×</span><button class="hbtn" id="layZoomIn" type="button" title="放大（滚轮也可以）">+</button><button class="hbtn" id="layZoomReset" type="button" title="复位到整图（双击图也可以）">复位</button><button class="hbtn" id="layCopy" type="button" data-copy="layout" title="把当前视图（含缩放）连同图例渲染成 PNG 复制到剪贴板；剪贴板不可用时改为下载">复制图片</button></span><span class="badge" id="layoutBadge">—</span></header>
+        <header><h2>2D Layout</h2><span class="grow"></span><span class="hdrbtns"><button class="hbtn" id="layZoomMode" type="button" hidden title="变焦镜头：上下画广角 / 中焦 / 长焦三态（物距无限远，像面对齐），并画出各组随变焦的移动轨迹">变焦三态</button><button class="hbtn" id="layZoomRays" type="button" hidden title="变焦三态里画三视场光路（0 / 0.5 / 1.0 倍最大像高），每一态的渐晕按该焦段的真实通光现算">光路</button><button class="hbtn" id="layZoomOut" type="button" title="缩小（滚轮也可以）">−</button><span class="hzoom" id="layZoomLbl" title="当前缩放；拖动平移，双击复位">1.0×</span><button class="hbtn" id="layZoomIn" type="button" title="放大（滚轮也可以）">+</button><button class="hbtn" id="layZoomReset" type="button" title="复位到整图（双击图也可以）">复位</button><button class="hbtn" id="layCopy" type="button" data-copy="layout" title="把当前视图（含缩放）连同图例渲染成 PNG 复制到剪贴板；剪贴板不可用时改为下载">复制图片</button></span><span class="badge" id="layoutBadge">—</span></header>
         <div class="plotwrap"><svg class="plot" id="layout" role="img" aria-label="镜头二维结构图与光线追迹"></svg></div>
         <div class="legend" id="layoutLegend"></div>
       </section>
