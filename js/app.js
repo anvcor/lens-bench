@@ -1211,6 +1211,19 @@
   });
   function drawZoomLayout(ZV) {
     var svg = $('layout'), sur0 = last.surfaces, N = sur0.length, si = last.opt.stopIdx;
+    /* 保护玻璃 / 滤镜：从像面往前连续的平板（两面都是平面的镜片）不算变焦群——不编组号、不画括号和轨迹、
+       不计入「几组移动」，镜片照画。尼康 Z 24-70 II、FE 12-24 GM 最后都是一块平板 */
+    var cg = N;
+    for (var q0 = N - 2; q0 >= 0; q0--) {
+      if (!sur0[q0].isGlass) continue;
+      if (!sur0[q0].R && !sur0[q0 + 1].R && !(sur0[q0].asph && sur0[q0].asph.length)) cg = q0; else break;
+    }
+    var groups = ZV.groups.map(function (G) {
+      if (G.a >= cg) return null;
+      var H = G.b >= cg ? Object.assign({}, G, { b: cg - 1 }) : G, keep = si >= H.a && si <= H.b;
+      for (var r = H.a; r <= H.b; r++) if (sur0[r].isGlass) keep = true;
+      return keep ? H : null;
+    }).filter(Boolean);
     var inkC = css('--ink'), ink2 = css('--ink-2'), ink3 = css('--ink-3');
     var glass = css('--glass'), glass2 = css('--glass-2'), gstroke = css('--glass-stroke');
     var cZoom = css('--accent'), cFocus = css('--v2'), lam = last.opt.lambdas[last.opt.primary].nm / 1000;
@@ -1268,26 +1281,32 @@
     S.forEach(function (s) {
       var sys = s.B.sys, elemIdx = [];
       for (var q = 0; q < N; q++) if (sys.surfaces[q].isGlass && q + 1 < N) elemIdx.push(q);
-      s.geo = ZV.groups.map(function (G) {
-        var zMin = Infinity, zMax = -Infinity, sd = 0;
+      s.geo = groups.map(function (G) {
+        var zMin = Infinity, zMax = -Infinity, sd = 0, rMin = Infinity, rMax = -Infinity;
         s.B.lay.elements.forEach(function (e, j) {
           if (elemIdx[j] < G.a || elemIdx[j] > G.b) return;
           e.front.concat(e.back).forEach(function (pt) { zMin = Math.min(zMin, pt[0]); zMax = Math.max(zMax, pt[0]); sd = Math.max(sd, Math.abs(pt[1])); });
+          // 镜片边缘那一圈：前后两面轮廓的端点（轮廓从 −画图半径 走到 +画图半径，端点就在镜片外缘）
+          [e.front[0], e.front[e.front.length - 1], e.back[0], e.back[e.back.length - 1]].forEach(function (pt) {
+            rMin = Math.min(rMin, pt[0]); rMax = Math.max(rMax, pt[0]);
+          });
         });
         if (!isFinite(zMin)) {                             // 只有光阑的「组」：取光阑面
           zMin = zMax = sys.zVertex[Math.min(Math.max(si, G.a), G.b)];
           sd = (s.B.lay.drawSd && s.B.lay.drawSd[si]) || sys.sdStop || 1;
         }
-        var dc = s.track - (zMin + zMax) / 2;
-        return { dc: dc, sd: sd, off: dc - posOf(s.gm, G.a), d0: s.track - zMin, d1: s.track - zMax };
+        /* 轨迹端点取镜片边缘的轴向中点（曲线就是接在边缘上的）。弯月镜矢高大，整组轴向范围的中点
+           会偏到镜片凹进去的那一侧——尼康 24-70 II 的 G6 单片弯月就偏了近 1 mm */
+        var dc = isFinite(rMin) ? s.track - (rMin + rMax) / 2 : s.track - (zMin + zMax) / 2;
+        return { dc: dc, sd: sd, off: dc - posOf(s.gm, G.a), d0: s.track - zMin, d1: s.track - zMax, dm: s.track - (zMin + zMax) / 2 };
       });
     });
-    var moving = ZV.groups.map(function (G, gi) {
+    var moving = groups.map(function (G, gi) {
       var p = S.map(function (s) { return s.geo[gi].dc; });
       return Math.max.apply(null, p) - Math.min.apply(null, p) > 0.1;   // 专利数据的总长在各焦段间常有几十 µm 的出入（尼康 24-70 II 的 G1 差 0.06 mm），不算移动
     });
     var U = function (f) { return Math.log(f); };
-    ZV.groups.forEach(function (G, gi) {
+    groups.forEach(function (G, gi) {
       var col = G.focus ? cFocus : moving[gi] ? cZoom : ink3;
       for (var seg = 0; seg < 2; seg++) {
         var f0 = fs[seg], f1 = fs[seg + 1], A = S[seg].geo[gi], B = S[seg + 1].geo[gi];
@@ -1332,12 +1351,12 @@
     });
     // 组名写在 Wide 格上方；相邻两个挨得太近就错开到上一排
     var tags = [];
-    ZV.groups.forEach(function (G, gi) {
+    groups.forEach(function (G, gi) {
       var hasGlass = false; for (var r = G.a; r <= G.b; r++) if (sur0[r] && sur0[r].isGlass) hasGlass = true;
       if (!hasGlass && G.name !== 'St') return;
       var t = G.name + (G.focus ? '·F' : '');
       var Gq = S[0].geo[gi];
-      tags.push({ x: X(Gq.dc), xa: X(Gq.d0), xb: X(Gq.d1), br: hasGlass, t: t, w: t.length * 6.6 + 6, col: G.focus ? cFocus : moving[gi] ? cZoom : ink2 });
+      tags.push({ x: X(Gq.dm), xa: X(Gq.d0), xb: X(Gq.d1), br: hasGlass, t: t, w: t.length * 6.6 + 6, col: G.focus ? cFocus : moving[gi] ? cZoom : ink2 });
     });
     tags.sort(function (p, q) { return p.x - q.x; });
     /* 组括号（专利图的画法）：一条横线跨过该组镜片的轴向范围，两端短竖线朝下，组名写在括号上面；
@@ -1359,7 +1378,7 @@
     svg.innerHTML = g.join('');
     LAYZ.box = [X(maxL) - 10, top - 30, xImg + 12, axisY[2] + maxY * scale + 20];   // 三态的镜片范围（含组括号）
     layBase(+PX.toFixed(0), +PY.toFixed(0));
-    var nm = ZV.groups.filter(function (G, gi) { return moving[gi]; });
+    var nm = groups.filter(function (G, gi) { return moving[gi]; });
     $('layoutBadge').textContent = '变焦三态 · ' + nm.length + ' 组移动';
     var sw2 = function (c, d) { return '<span class="sw" style="background:' + c + (d ? ';border-top:2px dashed ' + c + ';background:none;height:0' : '') + '"></span>'; };
     $('layoutLegend').innerHTML =
@@ -1368,7 +1387,7 @@
       '<span class="lg">' + sw2(ink3, 1) + '固定组</span>' +
       (rays ? ['0', '0.5', '1.0'].map(function (q, i) { return '<span class="lg">' + sw2(fieldCols[i]) + q + ' 视场</span>'; }).join('') : '') +
       '<span class="lg conv">三态物距 ∞、像面对齐；Mid = ' + ZV.mName + ' ' + fmt(ZV.fM, 2) + ' mm；轨迹按 ' +
-      (ZV.src === 'cam' ? '凸轮数据的 ∞ 节点' : '多重结构的变焦插值') + '，纵向按 ln f · ' +
+      (ZV.src === 'cam' ? '凸轮数据的 ∞ 节点' : '多重结构的变焦插值') + '，纵向按 ln f' + (cg < N ? '；像面前的平板（保护玻璃 / 滤镜）不算组' : '') + ' · ' +
       (rays ? '视场按' + (fmodeH ? '像高' : '视场角') + '等分，渐晕' + (vigOK ? '按各焦段的真实通光现算' : '按通光实时追迹') : '光路没画（表头「光路」打开）') + '</span>';
   }
   function renderLayout() {
