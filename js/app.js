@@ -1301,24 +1301,47 @@
         return { dc: dc, sd: sd, off: dc - posOf(s.gm, G.a), d0: s.track - zMin, d1: s.track - zMax, dm: s.track - (zMin + zMax) / 2 };
       });
     });
+    var U = function (f) { return Math.log(f); }, NS = 48;
+    /* 轨迹采样：第 seg 段（0 = W→M，1 = M→T）第 i 点（0…NS）处该组中点到像面的距离 */
+    var trajD = function (G, gi, seg, i) {
+      var A = S[seg].geo[gi], B = S[seg + 1].geo[gi], t = i / NS;
+      if (i === 0) return A.dc; if (i === NS) return B.dc;
+      var f = Math.exp(U(fs[seg]) + t * (U(fs[seg + 1]) - U(fs[seg])));
+      return posOf(ZV.gOf(f), G.a) + A.off + t * (B.off - A.off);
+    };
+    /* 动没动按整条轨迹的行程判，不只看三态：尼康 24-70 II 的「G1 变焦凸轮」解里，G1 在三态上几乎在同一处，
+       中途却往后退 1.4 mm——只看三态会把它当成固定组、画成一条弯来弯去的虚线。
+       专利数据的总长在各焦段间常有几十 µm 的出入，行程 ≤ 0.1 mm 的仍算固定 */
     var moving = groups.map(function (G, gi) {
-      var p = S.map(function (s) { return s.geo[gi].dc; });
-      return Math.max.apply(null, p) - Math.min.apply(null, p) > 0.1;   // 专利数据的总长在各焦段间常有几十 µm 的出入（尼康 24-70 II 的 G1 差 0.06 mm），不算移动
+      var lo = Infinity, hi = -Infinity;
+      for (var seg = 0; seg < 2; seg++) for (var i = 0; i <= NS; i += 4) { var d = trajD(G, gi, seg, i); lo = Math.min(lo, d); hi = Math.max(hi, d); }
+      return hi - lo > 0.1;
     });
-    var U = function (f) { return Math.log(f); };
+    /* 过采样点的光滑曲线（Catmull-Rom 转三次贝塞尔）：多项式凸轮是光滑的，用折线画会在拐弯处露出棱角 */
+    var smooth = function (P) {
+      var d = 'M' + P[0][0].toFixed(3) + ' ' + P[0][1].toFixed(3);
+      for (var i = 0; i < P.length - 1; i++) {
+        var p0 = P[Math.max(0, i - 1)], p1 = P[i], p2 = P[i + 1], p3 = P[Math.min(P.length - 1, i + 2)];
+        d += ' C' + (p1[0] + (p2[0] - p0[0]) / 6).toFixed(3) + ' ' + (p1[1] + (p2[1] - p0[1]) / 6).toFixed(3) + ' ' +
+             (p2[0] - (p3[0] - p1[0]) / 6).toFixed(3) + ' ' + (p2[1] - (p3[1] - p1[1]) / 6).toFixed(3) + ' ' +
+             p2[0].toFixed(3) + ' ' + p2[1].toFixed(3);
+      }
+      return d;
+    };
     groups.forEach(function (G, gi) {
       var col = G.focus ? cFocus : moving[gi] ? cZoom : ink3;
       for (var seg = 0; seg < 2; seg++) {
-        var f0 = fs[seg], f1 = fs[seg + 1], A = S[seg].geo[gi], B = S[seg + 1].geo[gi];
+        var A = S[seg].geo[gi], B = S[seg + 1].geo[gi];
         var y0 = axisY[seg] + A.sd * scale + 3, y1 = axisY[seg + 1] - B.sd * scale - 3, pts = [];
         if (!(y1 > y0 + 2)) continue;
-        for (var i = 0; i <= 24; i++) {
-          var t = i / 24, f = Math.exp(U(f0) + t * (U(f1) - U(f0)));
-          var d = i === 0 ? A.dc : i === 24 ? B.dc : posOf(ZV.gOf(f), G.a) + A.off + t * (B.off - A.off);
-          pts.push(X(d).toFixed(3) + ' ' + (y0 + t * (y1 - y0)).toFixed(3));
+        if (!moving[gi]) {                                   // 固定组：一条竖直虚线，不跟着几十 µm 的数据出入扭
+          var xm = X((A.dc + B.dc) / 2);
+          g.push('<path d="M' + xm.toFixed(3) + ' ' + y0.toFixed(3) + ' L' + xm.toFixed(3) + ' ' + y1.toFixed(3) + '" fill="none" stroke="' + col + '"' +
+            sw(0.9) + dash('3 3') + ' stroke-opacity=".6" stroke-linecap="round"/>');
+          continue;
         }
-        g.push('<path d="M' + pts.join(' L') + '" fill="none" stroke="' + col + '"' + sw(moving[gi] ? 1.4 : 0.9) +
-          (moving[gi] ? '' : dash('3 3')) + ' stroke-opacity="' + (moving[gi] ? .9 : .6) + '" stroke-linecap="round"/>');
+        for (var i = 0; i <= NS; i++) pts.push([X(trajD(G, gi, seg, i)), y0 + i / NS * (y1 - y0)]);
+        g.push('<path d="' + smooth(pts) + '" fill="none" stroke="' + col + '"' + sw(1.4) + ' stroke-opacity=".9" stroke-linecap="round"/>');
       }
     });
     S.forEach(function (s, i) {
