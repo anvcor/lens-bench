@@ -463,12 +463,13 @@ var OPT = (function () {
       // （物距有限、或首面曲率半径很大时会出现），最小根会落到球面的另一侧——
       // 70mm macro 的 1.2M 结构就是这么把第 1 面的落点解成 −9.7 而不是 +11.4 的。
       var tPre = 0;
-      if (lz !== 0) {
-        if (Math.abs(D[2]) < 1e-14) return { ok: false, pts: pts, blockedAt: i };
+      if (lz !== 0 && Math.abs(D[2]) >= 1e-9) {
         tPre = -lz / D[2];
         lx += tPre * D[0]; ly += tPre * D[1]; lz = 0;
       }
-      var t = intersect(s, lx, ly, lz, D);
+      // −tPre 是真实起点在这条参数线上的位置；鱼眼的大视场光线几乎横着进来，平移到切平面要走很远，
+      // 两个根都在前方时「离切平面近的那个」可能是穿出点 —— intersect 据此改取先碰到的那个
+      var t = intersect(s, lx, ly, lz, D, -tPre);
       if (t === null || !isFinite(t)) return { ok: false, pts: pts, blockedAt: i };
 
       var x = lx + t * D[0], y = ly + t * D[1], z = lz + t * D[2];
@@ -554,7 +555,7 @@ var OPT = (function () {
   }
 
   var _ss = [0, 0];                                     // sagSlope 的复用缓冲，别在热路径上分配
-  function intersect(s, px, py, pz, D) {
+  function intersect(s, px, py, pz, D, t0) {
     var c = s.R ? 1 / s.R : 0, k = s.k, t = null;
     if (c === 0) {
       if (Math.abs(D[2]) >= 1e-14) t = -pz / D[2];
@@ -570,6 +571,15 @@ var OPT = (function () {
           var q = -0.5 * (B + (B >= 0 ? sq : -sq));
           var t1 = q / A, t2 = (Math.abs(q) < 1e-300) ? t1 : C / q;
           t = Math.abs(t1) < Math.abs(t2) ? t1 : t2;
+          /* 鱼眼的大视场光线几乎横着进来（与光轴夹角 > 80°），平移到切平面要走很远，
+             两个根都在真实起点前方、又都落在顶点那一支（1 − (1+k)·c·z > 0）时，「离切平面近」的是穿出点，
+             光线先碰到的是 t 小的那个。只对这种近乎横向的光线改：普通镜头边缘光线的「先碰到」
+             可能落在延长球面的口径之外（RF 28 饼干头实测过，满视场渐晕被算错 0.17），那里仍照旧 */
+          if (t0 !== undefined && t1 !== t2 && Math.abs(D[2]) < WIDE_COS) {
+            var lo = Math.min(t1, t2), hi = Math.max(t1, t2), eps = 1e-9 * (1 + Math.abs(t0));
+            if (lo > t0 + eps && t !== lo &&
+                1 - (1 + k) * c * (pz + lo * D[2]) > 0 && 1 - (1 + k) * c * (pz + hi * D[2]) > 0) t = lo;
+          }
         }
       }
     }
@@ -690,7 +700,9 @@ var OPT = (function () {
       efl: fo.efl, bfl: fo.bfl, zEP: fo.zEP, epd: epd, fno: fnoEff, pupilMag: fo.pupilMag,
       zObj: zObj, mag: mag, objDist: finite ? objD : Infinity,
       vig: opt.vig || null,
-      zStart: Math.min(0, fo.zEP) - Math.max(20, Math.abs(fo.efl) * 0.5)
+      zStart: Math.min(0, fo.zEP) - Math.max(20, Math.abs(fo.efl) * 0.5),
+      // 整个镜头的尺度（总长与最大半口径取大）：超大视场的起点要退到这之外，见 startRay
+      span: Math.max(Math.abs(z), 2 * surfaces.reduce(function (m, s) { return Math.max(m, s.sd || 0); }, 0))
     };
     // 光阑半径：面上写了 CIR 就用它；没写就用轴上边缘光线在光阑面的实际落点
     // （这才是给定 F/# 下真正起限制作用的半径，近轴值 epd/2·|pupilMag| 只当兜底）
@@ -713,6 +725,7 @@ var OPT = (function () {
   }
 
   /* ---------- 从入瞳点发射一条光线并落到像面 ---------- */
+  var WIDE_COS = Math.cos(80 * Math.PI / 180);          // 视场超过 80° 换起点写法，见下
   function startRay(sys, thetaDeg, ex, ey) {
     var th = thetaDeg * Math.PI / 180;
     if (sys.zObj !== null && sys.zObj !== undefined) {
@@ -723,6 +736,14 @@ var OPT = (function () {
       return { P: [0, hO, sys.zObj], D: [dx / L2, dy / L2, dz / L2], pt: true };
     }
     var D = [0, Math.sin(th), Math.cos(th)];
+    if (D[2] < WIDE_COS) {
+      /* 超大视场（> 80°，鱼眼）：起点放在垂直于光线的平面上，(ex, ey) 是该平面上相对「过入瞳中心那条光线」的坐标。
+         原来那种「z = zStart 平面上、朝 z = zEP 平面的 (ex, ey) 打」的写法，θ 一靠近 90° 就退化（1/cosθ 发散），
+         过了 90° 光线根本到不了 zEP 平面。80° 以内照旧用原写法，已有镜头的结果一位不变。 */
+      var Yp = [0, D[2], -D[1]], Lf = (sys.zEP - sys.zStart) + sys.span + 50;
+      var O = [ex, ey * Yp[1], sys.zEP + ey * Yp[2]];
+      return { P: [O[0] - D[0] * Lf, O[1] - D[1] * Lf, O[2] - D[2] * Lf], D: D, pt: false, perp: true };
+    }
     var L = (sys.zEP - sys.zStart) / D[2];
     return { P: [ex - D[0] * L, ey - D[1] * L, sys.zStart], D: D, pt: false };
   }
@@ -761,6 +782,7 @@ var OPT = (function () {
     if (!C.tried) {                       // 该视场的参考解（主光线），只解一次
       C.tried = true;
       var ref = newton(0, 0, null, 0, 0, true);
+      if (!ref) { var sd = seedChief(); if (sd) ref = newton(sd[0], sd[1], null, 0, 0, true); }
       if (ref) { C.ex = ref[0]; C.ey = ref[1]; C.ok = true; }
     }
     var x0, y0, J = null;
@@ -773,6 +795,22 @@ var OPT = (function () {
     var sol = newton(x0, y0, J, tx, ty, false);
     if (!sol && J) sol = newton(tx / m, ty / m, null, tx, ty, false);   // 参考起点不好使，冷启动重来
     return sol ? { ex: sol[0], ey: sol[1] } : null;
+
+    /* 从入瞳中心起步追不通（鱼眼 65° 以外：入瞳随视场往前跑得很远，近轴那一点的光线根本进不了镜头），
+       就沿子午方向扫一遍起点，找光阑面落点跨过 0 的那一段线性插值出种子，再交给牛顿。
+       只在冷启动失败时才走，已有镜头不经过这里；结果仍只依赖 (θ, λ)。 */
+    function seedChief() {
+      var S = 3 * Math.max(sys.span || 0, sys.epd), N = 600, prev = null, best = null, i;
+      for (i = 0; i <= N; i++) {
+        var ey = -S + 2 * S * i / N, r = hit(0, ey);
+        if (!r) { prev = null; continue; }
+        if (!best || Math.abs(r[1]) < Math.abs(best[1])) best = [ey, r[1]];
+        if (prev && (prev[1] <= 0) !== (r[1] <= 0))
+          return [0, prev[0] + (ey - prev[0]) * prev[1] / (prev[1] - r[1])];
+        prev = [ey, r[1]];
+      }
+      return best ? [0, best[0]] : null;
+    }
 
     /* J 非空时前 4 步沿用这个固定雅可比（每步 1 条追迹），之后每步重算（每步 3 条）。
        storeJ 只有解参考光线时才为真 —— 缓存里必须始终是「主光线那一份」，
@@ -810,8 +848,8 @@ var OPT = (function () {
     return {
       ok: true, x: ix, y: iy, pts: r.pts, P: r.P, D: r.D,
       // 无限远物：各光线起点在同一 z 平面上，要折算到垂直入射方向的参考面（去掉倾斜项）；
-      // 有限物距：所有光线同出一点，只差一个活塞项，不用修正
-      opl: r.opl + (st.pt ? 0 : (D[0] * P[0] + D[1] * P[1]))
+      // 有限物距：所有光线同出一点，只差一个活塞项，不用修正；超大视场的起点本来就在垂直面上，也不用
+      opl: r.opl + (st.pt || st.perp ? 0 : (D[0] * P[0] + D[1] * P[1]))
     };
   }
 
@@ -1377,6 +1415,8 @@ var OPT = (function () {
           var zs = rs.P[2] - rs.P[0] / rs.D[0] * rs.D[2];
           S2.push([zs - sys.zImg, Math.abs(h)]);
         }
+        // 畸变按直线投影 f·tanθ 定义，θ → 90° 发散；鱼眼过了 89.5° 的点不画（没有意义，画出来是乱跳的）
+        if (th >= 89.5) continue;
         var hp = paraxChiefHeight(sys, th, lam);
         if (Math.abs(hp) > 1e-9) D.push([(Math.abs(h) - Math.abs(hp)) / Math.abs(hp) * 100, Math.abs(h)]);
         else D.push([0, 0]);

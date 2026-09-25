@@ -511,7 +511,13 @@ var LENSIO = (function () {
 
   function cfgsFrom(sq) {
     var z = sq.zoo, n = z && z.n ? z.n : 1;
-    if (!(n > 1)) return null;
+    /* 单结构的 zmx 也可能带渐晕系数（VDYN/VCYN…）。渐晕表只挂在结构上，没有结构就整张丢了，
+       而有渐晕系数时通光又不导成硬光阑 —— 两头落空，瞳就没有任何约束（佳能 RF 5.2 双鱼眼就是这么漏的）。
+       所以单结构带渐晕时也出一个结构，只装渐晕表。 */
+    if (!(n > 1)) {
+      if (!(sq._zmx && sq.vig && sq.vig.vuy)) return null;
+      return [{ title: sq.title || '单结构', thi: {}, rdy: {}, fno: null, obj: null, vig: sq.vig }];
+    }
     var list = [], i;
     for (i = 0; i < n; i++) {
       var c = { title: (z.tit && z.tit[i]) || ('Z' + (i + 1)), thi: {}, rdy: {}, fno: null, obj: null, vig: null };

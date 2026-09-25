@@ -375,7 +375,9 @@
       tx: rowsToText(state.rows), stop: state.stop + 1,
       apmode: $('apmode').value, aim: $('aim').checked, fmode: $('fmode').value, mtfmode: $('mtfmode').value,
       fno: num($('fno').value, 5, 0.1, 1e4),
-      fov: num($('fov').value, 20, 0, 89),
+      // 角度视场上限放到 120°：鱼眼（佳能 RF 5.2 双鱼眼半视场 95.49°）过 90° 内核能追（见 optics.js startRay）；
+      // 像高模式仍按 89 mm 封顶，和原来一样
+      fov: num($('fov').value, 20, 0, $('fmode').value === 'angle' ? 120 : 89),
       defoc: num($('defoc').value, 0, -1e4, 1e4),
       objd: parseObjDist($('objd').value),
       freqs: parseList($('freqs').value, [10, 30, 80]).filter(function (v) { return v > 0; }).slice(0, 4),
