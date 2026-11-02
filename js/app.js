@@ -1315,7 +1315,10 @@
        镜头从左边缘画起。空档稍放大一点（0.2 → 0.3）给标签留地方。电脑上照旧 */
     var avail = paneW('layout', 260), narrow = avail < 480;
     var padL = narrow ? 8 : 96, padR = narrow ? 16 : 24, top = narrow ? 60 : 54, gapR = narrow ? 0.3 : 0.2;    // gapR：两格之间的空档 / 格高（轨迹只画在空档里，不必留太大）
-    var hTot = 2 * maxY * (3 + 2 * gapR) + 0, scale = Math.min((avail - padL - padR) / maxL, (narrow ? avail * 2.4 : Math.max(260, Math.min(1000, avail * 0.9))) / hTot);
+    /* 窄屏的高度上限还要受屏幕高度管：整张图（加卡片标题栏 ~50、底部浮动栏 ~70、上下余量）要能在一屏里看全，
+       否则 FE 12-24 GM 这种前组大的三排叠起来有 786 px，看 Wide 时 Tele 在屏幕外、看 Tele 时 Wide 又出去了 */
+    var hCapN = Math.max(260, Math.min(avail * 2.4, (window.innerHeight || 700) - 150 - top - 38));
+    var hTot = 2 * maxY * (3 + 2 * gapR) + 0, scale = Math.min((avail - padL - padR) / maxL, (narrow ? hCapN : Math.max(260, Math.min(1000, avail * 0.9))) / hTot);
     var PX = avail, PY = Math.round(top + hTot * scale + 38);
     var xImg = padL + maxL * scale + Math.max(0, (avail - padL - padR - maxL * scale) / 2);
     var axisY = [0, 1, 2].map(function (i) { return top + (maxY + i * 2 * maxY * (1 + gapR)) * scale; });
