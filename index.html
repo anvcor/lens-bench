@@ -326,7 +326,24 @@ table.data tbody tr:hover{background:var(--panel-2)}
 .btn.primary{background:var(--accent);border-color:var(--accent);color:var(--panel);font-weight:600}
 .btn.primary:disabled{opacity:.5;cursor:default}
 .spotwrap{overflow-x:auto;padding:10px 11px 6px}
-.spotgrid{display:grid;gap:3px;width:100%}
+.spotgrid{display:grid;gap:3px;width:100%;grid-template-columns:max-content repeat(var(--spot-n,6),minmax(0,1fr))}
+/* 手机：一排 6 格时每格只有 46 px（左边标签列还占 70）。标签改成占一整行写在这组光斑上方，光斑每行最多 3 格（约 120 px） */
+@media(max-width:760px){
+  .spotgrid{grid-template-columns:repeat(var(--spot-cols,3),minmax(0,1fr))}
+  .spotgrid .spotlbl{grid-column:1/-1;flex-direction:row;align-items:baseline;flex-wrap:wrap;gap:2px 10px;padding:6px 2px 1px}
+  /* 控制区：原来是换行排列，字段宽窄不一、上下对不齐，「停止」单独掉到最后一行。改成三列网格，标签在上、输入框在下、等宽对齐：
+       目标光斑 | 视场点数 | 波长
+       每格每波长光线 | 每格渲染像素 | 生成 Spot
+       计算引擎（占两列） | 停止 */
+  .spotbar .ldmrow{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;align-items:end}
+  .spotbar .ldmrow > .grow{display:none}
+  .spotbar .fld{flex-direction:column;align-items:stretch;gap:3px;min-width:0}
+  .spotbar .fld input,.spotbar .fld select{width:100%;min-width:0;height:30px;flex:0 0 auto}
+  .spotbar .ldmrow > .btn{width:100%;height:30px;justify-content:center}
+  .spotbar .sp-um{order:1}.spotbar .sp-nf{order:2}.spotbar .sp-wl{order:3}
+  .spotbar .sp-n{order:4}.spotbar .sp-px{order:5}.spotbar #spotBtn{order:6}
+  .spotbar .sp-eng{order:7;grid-column:span 2}.spotbar #spotStop{order:8}
+}
 .spotlbl{display:flex;flex-direction:column;justify-content:center;gap:3px;padding:0 10px 0 2px;font-size:10.5px;color:var(--ink-3);white-space:nowrap}
 .spotlbl b{font-size:12px;color:var(--ink);font-weight:600}
 .spotlbl i{font-style:normal;font-family:"IBM Plex Mono",monospace;color:var(--ink-2)}
@@ -604,14 +621,14 @@ table.data tbody tr:hover{background:var(--panel-2)}
   <!-- ============ Spot · 虚化光斑 ============ -->
   <section class="card">
     <header><h2>Spot · 虚化光斑</h2><span class="grow"></span><button class="hbtn" type="button" data-copy="spot" title="把图连同图例渲染成 PNG 复制到剪贴板；剪贴板不可用时改为下载">复制图片</button><span class="badge" id="spotBadge">未计算</span><button class="helpbtn" type="button" data-help="spotHelp" aria-controls="spotHelp" aria-expanded="false" aria-label="使用说明">?</button></header>
-    <div class="ldmbar">
+    <div class="ldmbar spotbar">
       <div class="ldmrow">
-        <label class="fld"><span>目标光斑 <i>µm</i></span><input id="spotUm" type="number" step="50" min="20" value="600"></label>
-        <label class="fld"><span>视场点数</span><select id="spotNF"><option value="4">4</option><option value="6" selected>6</option><option value="8">8</option></select></label>
-        <label class="fld"><span>每格每波长光线</span><select id="spotN"><option value="20000">2 万</option><option value="50000" selected>5 万</option><option value="100000">10 万</option><option value="300000">30 万</option></select></label>
-        <label class="fld"><span>计算引擎</span><select id="spotBackend" title="GPU 单精度混合管线；数值对照可选择 JavaScript 双精度"><option value="js" selected>JavaScript（双精度 · 多线程）</option><option value="gpu">WebGPU（单精度）</option></select></label>
-        <label class="fld"><span>波长</span><select id="spotWl"><option value="all" selected>全部</option><option value="pri">只主波长</option></select></label>
-        <label class="fld"><span>每格渲染像素</span><select id="spotPx"><option value="320">320</option><option value="400" selected>400</option><option value="500">500</option></select></label>
+        <label class="fld sp-um"><span>目标光斑 <i>µm</i></span><input id="spotUm" type="number" step="50" min="20" value="600"></label>
+        <label class="fld sp-nf"><span>视场点数</span><select id="spotNF"><option value="4">4</option><option value="6" selected>6</option><option value="8">8</option></select></label>
+        <label class="fld sp-n"><span>每格每波长光线</span><select id="spotN"><option value="20000">2 万</option><option value="50000" selected>5 万</option><option value="100000">10 万</option><option value="300000">30 万</option></select></label>
+        <label class="fld sp-eng"><span>计算引擎</span><select id="spotBackend" title="GPU 单精度混合管线；数值对照可选择 JavaScript 双精度"><option value="js" selected>JavaScript（双精度 · 多线程）</option><option value="gpu">WebGPU（单精度）</option></select></label>
+        <label class="fld sp-wl"><span>波长</span><select id="spotWl"><option value="all" selected>全部</option><option value="pri">只主波长</option></select></label>
+        <label class="fld sp-px"><span>每格渲染像素</span><select id="spotPx"><option value="320">320</option><option value="400" selected>400</option><option value="500">500</option></select></label>
         <span class="grow"></span>
         <button class="btn primary" id="spotBtn" type="button">生成 Spot</button>
         <button class="btn" id="spotStop" type="button" disabled>停止</button>

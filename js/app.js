@@ -1310,8 +1310,12 @@
         maxY = Math.max(maxY, Math.abs(p[1])); maxL = Math.max(maxL, s.track - p[0]); }); }); });
     });
     maxY = Math.max(maxY, 1) * 1.06;
-    var avail = paneW('layout', 260), padL = avail < 480 ? 64 : 96, padR = avail < 480 ? 12 : 24, top = 54, gapR = 0.2;    // gapR：两格之间的空档 / 格高（轨迹只画在空档里，不必留太大）
-    var hTot = 2 * maxY * (3 + 2 * gapR) + 0, scale = Math.min((avail - padL - padR) / maxL, Math.max(260, Math.min(1000, avail * 0.9)) / hTot);
+    /* 窄屏（手机）：三排上下叠，原来高度封顶 0.9 × 宽（约 340 px），镜头按高度缩到只占中间一半宽，左边还有 64 px 的标签列。
+       手机屏是竖长的，高度上限放到 2.4 × 宽，让镜头按宽度铺满；每排的标签改成一行写在这排上方的空档里（第一排写在最顶上），
+       镜头从左边缘画起。空档稍放大一点（0.2 → 0.3）给标签留地方。电脑上照旧 */
+    var avail = paneW('layout', 260), narrow = avail < 480;
+    var padL = narrow ? 8 : 96, padR = narrow ? 16 : 24, top = narrow ? 60 : 54, gapR = narrow ? 0.3 : 0.2;    // gapR：两格之间的空档 / 格高（轨迹只画在空档里，不必留太大）
+    var hTot = 2 * maxY * (3 + 2 * gapR) + 0, scale = Math.min((avail - padL - padR) / maxL, (narrow ? avail * 2.4 : Math.max(260, Math.min(1000, avail * 0.9))) / hTot);
     var PX = avail, PY = Math.round(top + hTot * scale + 38);
     var xImg = padL + maxL * scale + Math.max(0, (avail - padL - padR - maxL * scale) / 2);
     var axisY = [0, 1, 2].map(function (i) { return top + (maxY + i * 2 * maxY * (1 + gapR)) * scale; });
@@ -1416,10 +1420,18 @@
       }
       var ih = Math.min(maxY * 0.8, fmodeH ? fov : maxY * 0.5);
       g.push('<line x1="' + xImg.toFixed(3) + '" y1="' + Y(ih).toFixed(3) + '" x2="' + xImg.toFixed(3) + '" y2="' + Y(-ih).toFixed(3) + '" stroke="' + inkC + '"' + sw(2) + '/>');
-      var lx = Math.max(8, X(maxL) - 84);                   // 标注贴着镜头左边
-      g.push(label(lx, ay, 0, -4, 'start', names[i], inkC, 12, 600));
-      g.push(label(lx, ay, 0, 11, 'start', 'f ' + fmt(s.efl, 2), ink2, 10.5));
-      g.push(label(lx, ay, 0, 24, 'start', 'Σ ' + fmt(s.track, 1), ink3, 10));
+      if (narrow) {                                         // 手机：一行写在这排上方的空档里，第一排写在最顶上；描一圈底色，压到轨迹线上也看得清
+        var ly = i === 0 ? 16 : ay - maxY * scale - 7, halo = ' stroke="' + css('--panel') + '" stroke-width="3" paint-order="stroke"';
+        g.push('<g data-tx="8" data-ty="' + ly.toFixed(3) + '" transform="translate(8 ' + ly.toFixed(3) + ')"><text x="0" y="0" font-family="IBM Plex Mono, monospace"' + halo + '>' +
+          '<tspan fill="' + inkC + '" font-size="12" font-weight="600">' + names[i] + '</tspan>' +
+          '<tspan fill="' + ink2 + '" font-size="10.5" dx="8">f ' + fmt(s.efl, 2) + '</tspan>' +
+          '<tspan fill="' + ink3 + '" font-size="10" dx="8">Σ ' + fmt(s.track, 1) + '</tspan></text></g>');
+      } else {
+        var lx = Math.max(8, X(maxL) - 84);                 // 标注贴着镜头左边
+        g.push(label(lx, ay, 0, -4, 'start', names[i], inkC, 12, 600));
+        g.push(label(lx, ay, 0, 11, 'start', 'f ' + fmt(s.efl, 2), ink2, 10.5));
+        g.push(label(lx, ay, 0, 24, 'start', 'Σ ' + fmt(s.track, 1), ink3, 10));
+      }
     });
     // 组名写在 Wide 格上方；相邻两个挨得太近就错开到上一排
     var tags = [];
@@ -3938,8 +3950,11 @@
   function spotBuildGrid() {
     var P = SPOT.prep, M = SPOT.meta, g = $('spotGrid'), nF = M.fields.length;
     $('spotEmpty').hidden = true;
-    // 列宽等分卡片宽度（画布 CSS 缩放），不再按渲染像素排版，免掉横向滚动条
-    g.style.gridTemplateColumns = 'max-content repeat(' + nF + ', minmax(0, 1fr))';
+    // 列宽等分卡片宽度（画布 CSS 缩放），不再按渲染像素排版，免掉横向滚动条。
+    // 列数交给 CSS（--spot-n / --spot-cols）：电脑上「标签列 + 一排 nF 格」，手机上标签占一整行、每行最多 3 格，见 head.html .spotgrid
+    g.style.gridTemplateColumns = '';
+    g.style.setProperty('--spot-n', nF);
+    g.style.setProperty('--spot-cols', Math.min(3, nF));
     var html = '';
     P.depths.forEach(function (d, di) {
       var um = d.role === 'focus' ? P.dd.focusUm : d.role === 'back' ? P.dd.backUm : P.dd.frontUm;
