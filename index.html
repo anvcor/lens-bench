@@ -1,6 +1,7 @@
 <!doctype html>
 <!-- 镜头 MTF 仿真台 · Copyright (C) 2026 anvcor · GPL-3.0-only · https://github.com/anvcor/lens-bench -->
 <html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<script>(function(){try{var u=navigator.userAgent||"",s=Math.min(screen.width,screen.height),t=(navigator.maxTouchPoints||0)>0||(window.matchMedia&&matchMedia("(pointer:coarse)").matches);if(!/Mobi|Android|iPhone|iPod|iPad/i.test(u)&&s>0&&s<600&&t){var m=document.querySelector("meta[name=viewport]");if(m)m.setAttribute("content","width=1280");}}catch(e){}})();</script>
 <title>镜头 MTF 仿真台</title>
 <style>
 /* 自托管字体：Archivo 可变字重 + IBM Plex Mono 400/500/600，latin 子集 */
@@ -340,10 +341,19 @@ table.data tbody tr:hover{background:var(--panel-2)}
 .card .body{padding:11px}
 
 /* ---------- 状态栏 ---------- */
-.statuswrap{position:sticky;bottom:0;z-index:20;margin-top:10px;
-  background:var(--bg);padding-bottom:10px}
-.status{display:flex;align-items:center;gap:0;overflow-x:auto;font-size:11.5px;
+/* 底部栏是浮在页面上的圆角条。外层原来铺了一块和页面底色一样的不透明长方形（底下 10 px、手机上左右 14 px），
+   滑动时卡片在它上沿被一刀切断，圆角条压在方形实心底上，过渡生硬。现在外层透明、不挡点击，内容直接从栏下面滑过；
+   栏本身半透明 + 背景模糊（毛玻璃），能隐约看到下面的内容。不支持 backdrop-filter / color-mix 的浏览器退回原来的实色底 */
+.statuswrap{position:sticky;bottom:0;z-index:20;margin-top:10px;padding-bottom:10px;pointer-events:none}
+.status .sfit{display:none!important}     /* 放不下时由 fitStatus 藏掉的次要项 */
+/* 滚动条不显示：放不下的项已经由 fitStatus 藏掉，极窄的窗口里剩下的部分仍可用触控板横滑 */
+.status{scrollbar-width:none}.status::-webkit-scrollbar{display:none}
+.status{display:flex;align-items:center;gap:0;overflow-x:auto;font-size:11.5px;pointer-events:auto;
   background:var(--panel);border:1px solid var(--line);border-radius:var(--r);box-shadow:var(--shadow)}
+@supports ((backdrop-filter:blur(1px)) or (-webkit-backdrop-filter:blur(1px))){
+  .status{background:color-mix(in srgb,var(--panel) 76%,transparent);
+    -webkit-backdrop-filter:blur(14px) saturate(1.4);backdrop-filter:blur(14px) saturate(1.4)}
+}
 .status .it{padding:7px 13px;border-right:1px solid var(--line-2);white-space:nowrap;flex:0 0 auto}
 .status .it b{color:var(--ink-3);font-weight:500;font-size:10px;letter-spacing:.05em;margin-right:7px;text-transform:uppercase}
 .status .it i{font-style:normal;color:var(--ink);font-weight:500}
@@ -364,6 +374,31 @@ table.data tbody tr:hover{background:var(--panel-2)}
   .status .it.mkeep b{margin-right:0;font-size:9px}
   .status .it.mkeep i{max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   .status .dl{display:none}.status .ml{display:inline}
+}
+
+/* ---------- 手机：内容铺满屏宽 ----------
+   电脑版的页面边距、卡片边框和圆角、卡片内边距搬到手机上，375 宽的屏幕每层左右都在空：图只有 346 宽，
+   图例 / 数据表 / 信息卡只剩三百出头（信息卡因此一列一项、排得很长）。手机上页面不留边，卡片去掉左右边框和圆角
+   （上下边框留着当分隔线、背景色区分卡片），内边距收到 6~10 px。图表按父元素宽度画，自然跟着变宽。电脑 / 平板不变 */
+@media(max-width:760px){
+  .app{padding:8px 0 0;gap:8px}
+  .top{padding:0 10px}
+  .work,.leftcol,.viewcol,.cmpbody{gap:8px}
+  .sysbar,.card{border-left:0;border-right:0;border-radius:0;box-shadow:none}
+  .sysbar{padding:8px 10px}
+  .card > header{padding:7px 10px;flex-wrap:wrap;row-gap:5px}   /* 按钮 + 统计标签放不下时换行，不再被卡片裁掉 */
+  .ldmbar{padding:7px 8px}
+  .legend{padding:0 10px 9px}
+  .hoverbar{padding:0 10px 8px}
+  details.tbl summary{padding:8px 10px}
+  .tblwrap{padding:0 6px 8px}
+  .spec{margin:6px 6px 0;padding:7px 8px 8px;gap:6px 10px}
+  .msg{margin:6px 6px 8px}
+  .spotwrap{padding:8px 4px 6px}
+  .card .body{padding:8px}
+  .helpwrap{padding:10px}
+  .statuswrap{padding:0 14px 10px}        /* 底部栏保持原来的样子（圆角、边框、离屏幕边一点），页面不留边了，所以这里自己补上左右 14 */
+  .cmpbody{padding:8px 0 48px}
 }
 
 @media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
@@ -740,19 +775,19 @@ table.data tbody tr:hover{background:var(--panel-2)}
   <!-- ============ 状态栏 ============ -->
   <div class="statuswrap">
     <div class="status">
-      <span class="it"><b>DIM</b><i>毫米</i></span>
+      <span class="it" data-fit="1"><b>DIM</b><i>毫米</i></span>
       <span class="it key mkeep mwide" id="stCfgWrap" style="display:none"><b><span class="dl">结构</span><span class="ml">ZOOM</span></b><i id="stCfg">—</i></span>
       <span class="it key mkeep"><b><span class="dl">使用的 f/</span><span class="ml">WFNO</span></b><i id="stFno">—</i></span>
       <span class="it key mkeep"><b>EFL</b><i id="stEfl">—</i></span>
-      <span class="it"><b>BFL</b><i id="stBfl">—</i></span>
-      <span class="it"><b>入瞳 Φ</b><i id="stEpd">—</i></span>
+      <span class="it" data-fit="6"><b>BFL</b><i id="stBfl">—</i></span>
+      <span class="it" data-fit="4"><b>入瞳 Φ</b><i id="stEpd">—</i></span>
       <span class="it mkeep" title="放大倍率，物在无限远时为 0"><b>RED</b><i id="stRed">—</i></span>
       <span class="it key mkeep" title="第 1 面到最末面顶点的距离"><b>OAL</b><i id="stOal">—</i></span>
-      <span class="it"><b>最大像高</b><i id="stImg">—</i></span>
-      <span class="it"><b>轴上 RMS</b><i id="stRms">—</i></span>
+      <span class="it" data-fit="5"><b>最大像高</b><i id="stImg">—</i></span>
+      <span class="it" data-fit="7"><b>轴上 RMS</b><i id="stRms">—</i></span>
       <span class="grow"></span>
-      <span class="it perf" id="stPerf">—</span>
-      <span class="it visits" title="本站累计访问量 / 独立访客，由 vercount 统计"><b>访问</b><i id="vercount_value_site_pv">—</i><b style="margin-left:10px">访客</b><i id="vercount_value_site_uv">—</i></span>
+      <span class="it perf" id="stPerf" data-fit="3">—</span>
+      <span class="it visits" data-fit="2" title="本站累计访问量 / 独立访客，由 vercount 统计"><b>访问</b><i id="vercount_value_site_pv">—</i><b style="margin-left:10px">访客</b><i id="vercount_value_site_uv">—</i></span>
     </div>
   </div>
 </div>

@@ -657,7 +657,25 @@
     var lastRow = rows.length ? rows[rows.length - 1] : null;
     $('stImg').textContent = fmt(lastRow ? (lastRow.imgHc || lastRow.imgH) : 0, 4);
     $('stRms').textContent = fmt(rows.length ? rows[0].rms : 0, 2) + ' µm';
+    fitStatus();
   }
+  /* 底部栏放不下时（电脑窗口不够宽），按 data-fit 从小到大藏掉次要的几项：DIM → 访问量 → 追迹耗时 → 入瞳 → 最大像高 → BFL → 轴上 RMS，
+     直到一行放得下——原来是出一条横向滚动条。结构 / F# / EFL / RED / OAL 一直显示；藏掉的几项镜头信息卡里都有。
+     手机上那几项本来就由 CSS 藏着，这里量出来不溢出，什么都不做 */
+  function fitStatus() {
+    var bar = document.querySelector('.status'); if (!bar) return;
+    var its = Array.prototype.slice.call(bar.querySelectorAll('[data-fit]'))
+      .sort(function (a, b) { return a.dataset.fit - b.dataset.fit; });
+    its.forEach(function (e) { e.classList.remove('sfit'); });
+    for (var i = 0; i < its.length && bar.scrollWidth > bar.clientWidth + 1; i++) its[i].classList.add('sfit');
+  }
+  (function () {
+    var t = null, bar = document.querySelector('.status');
+    addEventListener('resize', function () { clearTimeout(t); t = setTimeout(fitStatus, 80); });
+    // 访问量是外部计数脚本晚一点填进来的，数字一变宽度就变
+    if (bar && window.MutationObserver) new MutationObserver(function () { clearTimeout(t); t = setTimeout(fitStatus, 80); })
+      .observe(bar, { childList: true, characterData: true, subtree: true });
+  })();
 
   /* ================= 镜头信息卡 =================
      上半「标称」来自进度表（index 条目的 spec，tools/specs_import.py 写的），载入镜头时定下来不变；
@@ -1512,8 +1530,9 @@
       var c = cols[k % 4];
       ['T', 'S'].forEach(function (kind) {
         var pts = rows.map(function (r) { return [X(xOf(r)), Y(r[kind][k])]; });
-        g.push('<path d="' + pchip(pts) + '" fill="none" stroke="' + c + '" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"' +
-          (kind === 'S' ? ' stroke-dasharray="5 3.5"' : '') + '/>');
+        // 手机上图按 1:1 画，2 px 的曲线在小图上显得粗，窄屏细一点、虚线节距跟着缩
+        g.push('<path d="' + pchip(pts) + '" fill="none" stroke="' + c + '" stroke-width="' + (narrow ? 1.4 : 2) + '" stroke-linejoin="round" stroke-linecap="round"' +
+          (kind === 'S' ? ' stroke-dasharray="' + (narrow ? '4 3' : '5 3.5') + '"' : '') + '/>');
       });
       labels.push({ y: Y(rows[rows.length - 1].T[k]), text: nu + '', c: c });
     });
@@ -4243,9 +4262,11 @@
     // 画幅比例跟主页面的 MTF 图一致（高 = 宽 × 0.47，约 2.13 : 1）；
     // 对比页整宽比主页面右栏宽得多，所以上限放到 860，另加一道视口高度的兜底，
     // 免得在笔记本屏上一张图就把整屏占满。
-    var W = paneW('cmpMtf', 620);
-    var H = Math.round(Math.max(360, Math.min(W * 0.47, 860, (window.innerHeight || 900) * 0.72)));
-    var P = { l: 52, r: 96, t: 14, b: 46 };
+    // 按卡片实际宽度画（手机上原来按 620 画再整张缩到三百来像素，字小得看不清）；窄屏右边只留「A 10」这种末端标注、图放矮、曲线细一点
+    var W = paneW('cmpMtf', 300), narrow = W < 520;
+    if (narrow) W = Math.max(300, Math.round(svg.clientWidth || W));   // 外层 .body 有左右内边距，窄屏按图本身的宽度画才是 1:1
+    var H = Math.round(Math.max(narrow ? 260 : 360, Math.min(W * 0.47, 860, (window.innerHeight || 900) * 0.72)));
+    var P = { l: 52, r: narrow ? 44 : 96, t: 14, b: 46 };
     var iw = W - P.l - P.r, ih = H - P.t - P.b;
     var ink = css('--ink'), ink2 = css('--ink-2'), ink3 = css('--ink-3'), lineC = css('--line-2');
     var byH = S.xax === 'h';
@@ -4267,7 +4288,7 @@
       g.push('<text x="' + (P.l - 8) + '" y="' + (y + 4).toFixed(1) + '" fill="' + ink3 +
         '" font-size="10.5" text-anchor="end" font-family="IBM Plex Mono, monospace">' + (i === 0 ? '0' : i === 10 ? '1' : v.toFixed(1)) + '</text>');
     }
-    var step = niceStep(xmax / Math.max(8, Math.min(24, Math.round(iw / 58))));
+    var step = niceStep(xmax / Math.max(narrow ? 4 : 8, Math.min(24, Math.round(iw / 58))));
     for (var f = 0; f <= xmax + step * 1e-6; f += step) {
       var x = X(Math.min(f, xmax));
       g.push('<line x1="' + x.toFixed(1) + '" y1="' + P.t + '" x2="' + x.toFixed(1) + '" y2="' + (P.t + ih) +
@@ -4295,8 +4316,8 @@
             var val = kk[0] === 'A' ? (r.T[q] + r.S[q]) / 2 : r[kk[0]][q];
             return [X(byH ? t.hx[ri] : t.hx[ri] / t.hmax), Y(val)];
           });
-          g.push('<path d="' + pchip(pts) + '" fill="none" stroke="' + c + '" stroke-width="2.1" stroke-linejoin="round" stroke-linecap="round"' +
-            (kk[1] ? ' stroke-dasharray="5 3.5"' : '') + '/>');
+          g.push('<path d="' + pchip(pts) + '" fill="none" stroke="' + c + '" stroke-width="' + (narrow ? 1.5 : 2.1) + '" stroke-linejoin="round" stroke-linecap="round"' +
+            (kk[1] ? ' stroke-dasharray="' + (narrow ? '4 3' : '5 3.5') + '"' : '') + '/>');
         });
         var lastR = rows[rows.length - 1];
         labels.push({ y: Y(S.ts === 's' ? lastR.S[q] : S.ts === 'avg' ? (lastR.T[q] + lastR.S[q]) / 2 : lastR.T[q]),
