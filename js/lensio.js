@@ -81,7 +81,25 @@ var LENSIO = (function () {
   
     var out = { rows: [], stop: 0, warn: [] }, cur = null, inAsp = false, done = false;
   
-    function flush() { if (cur) { out.rows.push(cur); cur = null; } }
+    /* 面上的特殊面型在读完整个面以后才拼进 asph 那一栏：
+         SPS ODD Rn + SCO K / SCO ARn  → XODD Rn A1 … AN（CODE V 奇次多项式，第 n 项 = ARn·(r/Rn)^n，Rn 为 0 时不归一化）
+         DIF DOE + HOR / HWL / HCO Cj  → DOE M 1 a1 …（HCO 是 r^(2j) 的 OPD 系数（mm），相位 = 2π·OPD/λ₀，M = HOR） */
+    function flush() {
+      if (!cur) return;
+      if (cur._odd) {
+        var oa = cur._odd.a, on = oa.length - 1, os = [];
+        for (var q = 1; q <= on; q++) os.push(String(oa[q] || 0));
+        if (on > 0) { cur.asph = 'XODD ' + String(cur._odd.rn) + ' ' + os.join(' '); if (!cur.k) cur.k = '0'; }
+      }
+      if (cur._doe && cur._doe.c.length) {
+        var lm = (cur._doe.hwl || 587.56) / 1e6, ds = [];
+        for (var q2 = 1; q2 < cur._doe.c.length; q2++) ds.push(fmt(2 * Math.PI * (cur._doe.c[q2] || 0) / lm));
+        cur.asph = (cur.asph ? cur.asph + ' ' : '') + 'DOE ' + fmt(cur._doe.hor) + ' 1 ' + ds.join(' ');
+        if (!cur.k) cur.k = '0';
+      }
+      delete cur._odd; delete cur._doe;
+      out.rows.push(cur); cur = null;
+    }
 
     /* CODE V 多重结构（ZOO）记录：
          ZOO 5                      结构数
@@ -153,7 +171,9 @@ var LENSIO = (function () {
         flush(); inAsp = false;
         var r = num(tk[1]), t = num(tk[2]);
         cur = { R: (r === null || r === 0) ? 'inf' : fmt(r), T: t === null ? '0' : fmt(t), mat: '', sd: '', k: '', asph: '' };
-        if (tk[3] && !/^[-+]?[\d.]/.test(tk[3])) cur.mat = tk[3];
+        var mc = tk[3] ? /^(\d*\.?\d+(?:[eE][-+]?\d+)?):(\d*\.?\d+(?:[eE][-+]?\d+)?)$/.exec(tk[3]) : null;
+        if (mc) cur.mat = (+mc[1]).toFixed(6) + '/' + (+mc[2]).toFixed(4);   // CODE V 模型玻璃的另一种写法 nd:νd（n ≥ 2 只能这么写）
+        else if (tk[3] && !/^[-+]?[\d.]/.test(tk[3])) cur.mat = tk[3];
         else if (tk[3] && tk[4]) cur.mat = tk[3] + '/' + tk[4];     // nd vd 两个数
         else if (tk[3] && /^\d{6}\.\d+$/.test(tk[3])) {
           /* CODE V 的数字式（虚拟 / 模型）玻璃：整数部分 = (nd−1)×10⁶，小数部分 = νd/100。
@@ -175,16 +195,44 @@ var LENSIO = (function () {
       if (key === 'ASP' || key === 'ASPH') { inAsp = true; if (!cur.k) cur.k = '0'; continue; }
       if (key === 'K') { cur.k = fmt(num(tk[1]) || 0); continue; }
       if (key === 'CUF' || key === 'CUY' || key === 'RDY') continue;
-      if (inAsp && /^[A-H]$/.test(key)) {                // A B C D E F G H = r^4 … r^18
-        var idx = 'ABCDEFGH'.indexOf(key);
+      if (key === 'SPS') {                               // 特殊面：只认奇次多项式 SPS ODD <NRADIUS>
+        if ((tk[1] || '').toUpperCase() === 'ODD') { inAsp = false; var rn0 = num(tk[2]); cur._odd = { rn: rn0 ? rn0 : 1, a: [] }; }
+        continue;
+      }
+      if (key === 'SCO' && cur._odd) {                   // SCO K v / SCO ARn v / SCO Cn v（C1 = K，C(n+1) = ARn），一行可写几组
+        for (var sj = 0; sj + 1 < tk.length;) {
+          if (tk[sj].toUpperCase() === 'SCO') sj++;
+          var sn0 = (tk[sj] || '').toUpperCase(), sv = num(tk[sj + 1]); sj += 2;
+          if (sv === null) continue;
+          var mAR = /^AR(\d+)$/.exec(sn0), mC = /^C(\d+)$/.exec(sn0);
+          if (sn0 === 'K' || (mC && +mC[1] === 1)) cur.k = fmt(sv);
+          else if (mAR) cur._odd.a[+mAR[1]] = sv;
+          else if (mC && +mC[1] > 1 && +mC[1] <= 31) cur._odd.a[+mC[1] - 1] = sv;
+        }
+        continue;
+      }
+      if (key === 'DIF') { if ((tk[1] || '').toUpperCase() === 'DOE') cur._doe = { hor: 1, hwl: null, c: [] }; continue; }
+      if (cur._doe && (key === 'HOR' || key === 'HWL' || key === 'HCT' || key === 'HCO')) {
+        for (var hj = 0; hj < tk.length;) {               // 一行可写几组：HWL 587.56; HCT R / HCO C1 v; HCO C2 v
+          var hk = tk[hj].toUpperCase();
+          if (hk === 'HOR') { cur._doe.hor = num(tk[hj + 1]) || 1; hj += 2; }
+          else if (hk === 'HWL') { cur._doe.hwl = num(tk[hj + 1]); hj += 2; }
+          else if (hk === 'HCT') hj += 2;
+          else if (hk === 'HCO') hj++;
+          else { var mh = /^C(\d+)$/.exec(hk); if (mh) cur._doe.c[+mh[1]] = num(tk[hj + 1]) || 0; hj += mh ? 2 : 1; }
+        }
+        continue;
+      }
+      if (inAsp && /^[A-HJ]$/.test(key)) {               // A B C D E F G H J = r^4 … r^20（CODE V 跳过 I）
+        var idx = 'ABCDEFGHJ'.indexOf(key);
         var a = (cur.asph ? cur.asph.split(/\s+/) : []);
         while (a.length <= idx) a.push('0');
         a[idx] = fmt(num(tk[1]) || 0);
         cur.asph = a.join(' ');
         // 同一行可能是 "A v; B v; C v; D v"
         for (var j = 2; j + 1 < tk.length; j += 2) {
-          if (!/^[A-H]$/.test(tk[j].toUpperCase())) break;
-          var id2 = 'ABCDEFGH'.indexOf(tk[j].toUpperCase());
+          if (!/^[A-HJ]$/.test(tk[j].toUpperCase())) break;
+          var id2 = 'ABCDEFGHJ'.indexOf(tk[j].toUpperCase());
           while (a.length <= id2) a.push('0');
           a[id2] = fmt(num(tk[j + 1]) || 0);
         }
@@ -618,6 +666,7 @@ var LENSIO = (function () {
     for (i = 0; i < n; i++) {
       var c = { title: (z.tit && z.tit[i]) || ('Z' + (i + 1)), thi: {}, rdy: {}, fno: null, obj: null, vig: null };
       if (z.FNO && z.FNO[i] != null) c.fno = z.FNO[i];
+      else if (!sq.fno && z.EPD && z.EPD[i] != null) c.fno = z.EPD[i];     // 孔径按入瞳直径定（EPD）时，fno 一栏装的就是入瞳直径
       ['THI', 'RDY'].forEach(function (op) {
         if (!z[op]) return;
         Object.keys(z[op]).forEach(function (kk) {

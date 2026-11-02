@@ -202,6 +202,17 @@ table.lde td.zoo{box-shadow:inset 2px 0 0 var(--accent)}
 .hdrsel select{height:22px;padding:1px 4px;font-size:11px;font-family:"IBM Plex Mono",ui-monospace,monospace}
 
 .ldmscroll{overflow-x:auto;flex:1 1 auto}          /* 只横向滚，纵向随内容展开 */
+/* 手机上面数据表格、镜头信息卡、波长设置默认收起：选完镜头往下一屏左右就是 Layout / MTF。
+   每块前面一条「展开 XXX」（.mfold，data-fold 指要收起的块）。电脑 / 平板上这些按钮不显示，.mfolded 也不起作用 */
+.mfold{display:none}
+@media(max-width:760px){
+  .mfold{display:flex;align-items:center;justify-content:space-between;gap:8px;width:100%;padding:9px 12px;border:0;
+    border-bottom:1px solid var(--line-2);background:var(--panel-2);color:var(--ink-2);font:inherit;font-size:12px;cursor:pointer}
+  .mfold i{font-style:normal;color:var(--ink-3);transition:transform .15s}
+  .mfold[aria-expanded="true"] i{transform:rotate(180deg)}
+  .mfolded{display:none!important}
+  .mfold:has(+ [hidden]){display:none}      /* 信息卡没内容（自定义处方等）时本身是隐藏的，按钮也不出 */
+}
 table.lde{border-collapse:separate;border-spacing:0;width:100%;font-size:11.5px}
 table.lde th{z-index:3;background:var(--panel-3);color:var(--ink-2);
   border-bottom:1px solid var(--line);border-right:1px solid var(--line-2);
@@ -243,8 +254,9 @@ table.wl td.num{cursor:default}
 .plotwrap{width:100%;overflow-x:auto}
 svg.plot{display:block;width:100%;height:auto}
 /* Layout 缩放：滚轮 / 拖动 / 双击复位 */
-#layout{touch-action:none;user-select:none}
-#layout.zoomed{cursor:grab}#layout.dragging{cursor:grabbing}
+/* 手机上没放大时手指划过结构图要能滚动页面（原来一直是 none，划到图上页面就不动了）；放大后拖动才归 Layout */
+#layout{touch-action:pan-y pinch-zoom;user-select:none}
+#layout.zoomed{cursor:grab;touch-action:none}#layout.dragging{cursor:grabbing}
 .hdrbtns{display:inline-flex;align-items:center;gap:4px;margin-right:6px}
 .hbtn{height:22px;padding:0 8px;border:1px solid var(--line);border-radius:5px;background:var(--panel);
   color:var(--ink-2);font:inherit;font-size:11px;line-height:20px;cursor:pointer;white-space:nowrap}
@@ -252,7 +264,6 @@ svg.plot{display:block;width:100%;height:auto}
 .hbtn:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
 .hbtn.ok{border-color:var(--accent);color:var(--accent);background:var(--accent-soft)}
 .hzoom{font-family:"IBM Plex Mono",monospace;font-variant-numeric:tabular-nums;font-size:10.5px;color:var(--ink-3);min-width:40px;text-align:center}
-@media(max-width:760px){svg.plot#mtf{min-width:560px}svg.plot#layout{min-width:480px}}
 .legend{display:flex;flex-wrap:wrap;gap:5px 14px;align-items:center;padding:0 11px 10px;font-size:11px;color:var(--ink-2)}
 .lg{display:inline-flex;align-items:center;gap:6px}
 .sw{width:15px;height:2.5px;border-radius:2px;flex:0 0 auto}
@@ -340,6 +351,20 @@ table.data tbody tr:hover{background:var(--panel-2)}
 .status .grow{flex:1 1 auto;border:0}
 .status .it.perf{border-right:0;border-left:1px solid var(--line-2);color:var(--ink-2)}
 .status .it.visits{border-right:0;border-left:1px solid var(--line-2);color:var(--ink-2)}   /* 只在网页版出现 */
+/* 手机上底部栏只留 ZOOM（结构）/ WFNO（使用的 f/）/ EFL / RED / OAL 五项，标签在上、数值在下，平分一行，不用横着滑。
+   .dl / .ml = 电脑 / 手机上的标签写法；结构那一项单结构镜头本来就隐藏（行内 display:none 优先），多结构时占宽一点、太长省略 */
+.status .ml{display:none}
+@media(max-width:760px){
+  .status{overflow-x:hidden}
+  .status > :not(.mkeep){display:none}
+  /* 数值四项按内容宽度完整显示（不截断），多出来的宽度大部分给 ZOOM；结构名太长时只截 ZOOM。单结构镜头没有 ZOOM，四项平分 */
+  .status .it.mkeep{flex:1 0 auto;display:flex;flex-direction:column;align-items:flex-start;gap:1px;padding:5px 6px}
+  .status .it.mkeep.mwide{flex:12 1 0;min-width:0}
+  .status .it.mkeep:last-of-type{border-right:0}
+  .status .it.mkeep b{margin-right:0;font-size:9px}
+  .status .it.mkeep i{max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .status .dl{display:none}.status .ml{display:inline}
+}
 
 @media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
 </style>
@@ -410,11 +435,13 @@ table.data tbody tr:hover{background:var(--panel-2)}
       <div class="ldmbar">
         <div class="ldmrow">
           <label class="cfgsel"><span>品牌</span><select id="brand" aria-label="镜头品牌"></select></label>
-          <select id="ex" aria-label="载入镜头"></select>
+          <select id="ex" aria-label="载入镜头" title="↑ / ↓ 方向键逐颗翻看（光标不在输入框里时），翻到品牌头尾自动进入上一个 / 下一个品牌"></select>
           <label class="cfgsel" id="cfgWrap" style="display:none"><span>结构</span><select id="cfg" aria-label="多重结构 / 变焦位置"></select></label>
           <span class="zoomgrp" id="zoomWrap" hidden><label class="cfgsel"><span>焦距 <i>mm</i></span><input id="zoomF" type="text" inputmode="decimal" autocomplete="off" spellcheck="false" aria-label="目标焦距（mm）"></label><button class="btn" id="zoomBtn" type="button">变焦</button></span>
           <button class="btn" id="impBtn" type="button" title="导入镜头文件（CODE V .seq / Zemax .zmx）；也可以选 ZoomCam 导出的「凸轮数据.json」，挂到当前镜头上">导入 .seq / .zmx</button>
           <input type="file" id="impFile" accept=".seq,.SEQ,.zmx,.ZMX,.len,.txt,.json" style="display:none">
+          <button class="btn" id="expZmx" type="button" title="把当前镜头（含全部多重结构、表里改过的数据、渐晕、通光）存成 Zemax .zmx，OpticStudio 直接打开">导出 .zmx</button>
+          <button class="btn" id="expSeq" type="button" title="把当前镜头（含全部多重结构、表里改过的数据、渐晕、通光）存成 CODE V .seq；孔径写入瞳直径，玻璃对照写在文件头注释里">导出 .seq</button>
         </div>
         <div class="ldmrow">
           <div class="btngrp">
@@ -432,16 +459,19 @@ table.data tbody tr:hover{background:var(--panel-2)}
           </div>
         </div>
       </div>
-      <div class="ldmscroll">
+      <button class="mfold" type="button" data-fold="ldmScroll" data-label="面数据表格" aria-controls="ldmScroll" aria-expanded="false"><span>展开面数据表格</span><i aria-hidden="true">▾</i></button>
+      <div class="ldmscroll mfolded" id="ldmScroll">
         <table class="lde" id="lde">
           <thead id="ldeHead"></thead>
           <tbody id="ldeBody"></tbody>
         </table>
       </div>
-      <div class="spec" id="lensSpec" hidden></div>
+      <button class="mfold" type="button" data-fold="lensSpec" data-label="镜头信息卡" aria-controls="lensSpec" aria-expanded="false"><span>展开镜头信息卡</span><i aria-hidden="true">▾</i></button>
+      <div class="spec mfolded" id="lensSpec" hidden></div>
       <div id="msgs"></div>
       <div class="helpwrap" id="ldmHelp" hidden>
-        <p class="note"><b>编辑</b>：直接改单元格；点「表面编号」格可把该面设为光阑。</p>
+        <p class="note"><b>逐颗翻看</b>：光标不在输入框里时，键盘 <b>↓ / ↑</b> 切到下一颗 / 上一颗镜头，翻到一个品牌的头尾会接着进入下一个 / 上一个品牌，像看幻灯片一样一路看下去；按住不放时下拉跟着走，松手才载入那一颗。</p>
+        <p class="note"><b>编辑</b>：直接改单元格；点「表面编号」格可把该面设为光阑。手机上面数据表格、镜头信息卡、波长设置都默认收起（选完镜头往下一屏左右就是 Layout 和 MTF），点各自的「展开…」再看 / 改。</p>
         <p class="note"><b>镜头信息卡</b>（表格下面那块）：上半是<b>标称</b>——专利号（点开是 Google Patents 检索）、型号代码、卡口 / 画幅 / 类型、标称焦距与光圈、发售年份，来自《镜头仿真进度表》，由 <code>tools/specs_import.py</code> 写进 <code>lenses/meta.json</code>；表里没有的镜头（唯卓仕、七工匠等）只有下半。下半是<b>本页按当前状态算出来的</b>：焦距、F/#、总长、后截距、入瞳、最大像高、片数，以及大致性能——轴上 / 边缘 RMS、前两个频率的中心 / 边缘 MTF、边缘通光率、最大畸变。改表格、切结构、改物距都会跟着刷新；标称值不变，两边对不上就是数据本身和产品的差别。信息卡下面那个琥珀色提示框<b>只在有需要处理的事时出现</b>（导入文件的解析警告、找不到的玻璃、最佳对焦 / 一键渐晕的结果、渐晕表与瞄准设置不一致、衍射采样不足等）；每颗镜头的数据来源与录入说明放在表头「专利 / 逆向」徽标的悬停提示里。</p>
         <p class="note"><b>物面与最佳对焦</b>：物面那一行的厚度就是<b>物距</b>，和顶栏「物距」是同一个量，改哪边都行，写 inf 为无限远；有多重结构时会写回当前结构。改完按<b>最佳对焦</b>：镜头有多个对焦结构时，按<b>镜头自己的对焦群</b>重新对焦——同一焦段、不同物距的几个结构相差的那几个间隔就是对焦群（浮动对焦的几组也一起认出来），把它们按 1/物距 插值成一条对焦凸轮，沿凸轮找<b>轴上 RMS 最小</b>的位置写回表里，<b>像面不动</b>，总长守恒。变焦镜头按<b>当前所在的焦段</b>对焦：先从表里的变焦间隔反推出焦段，再用相邻两个焦段各自的对焦凸轮插出这个焦段的对焦凸轮——正好在文件焦段上时就是那个焦段自己的凸轮，变焦到中间焦段以后也对得上。认不出对焦群（单结构、同物距几组不同间隔、对焦时曲率也在变、插删过面）时退回老办法：移动像面，写进「离焦」。物距超出文件给的对焦行程会提示是外推。</p>
         <p class="note"><b>变焦</b>（只在变焦镜头上出现，结构下拉旁边的「焦距 mm」）：填焦距按「变焦」或回车。多重结构里<b>物距无限远、间隔却各不相同</b>的几个结构就是文件给出的几个焦段；各变焦间隔对 <b>1/f 做自然三次样条插值</b>得到变焦凸轮，焦距按<b>对到无限远时的 EFL</b> 精确反解（镜身刻度的意思——对焦群一动 EFL 就跟着变，只看插值结果能差 0.4 mm），再沿插值出来的对焦群按「最佳对焦」同一判据对到当前物距，像面不动；对近处时状态栏的 EFL 会比填的小一点，那是对焦呼吸。各焦段 F/# 不同的跟着插值；渐晕用的是「按通光」的表就在新焦段上按真实通光重算，用文件系数的就在两侧焦段之间插值。<b>中间焦段是估计</b>：文件只给了几个焦段，节点之间真正的凸轮不知道。拿 FE 12-24 GM 的 5 个焦段做留一法（拿掉一个、用其余的预测它，对焦后比画质），1/f 自然样条的 0.7 视场 RMS 平均是真值的 1.6 倍、最差 2.2 倍，按焦距直线插值是 5~11 倍；实际用时节点间距只有留一法的一半，误差更小，但离轴画质仍只供参考；<b>文件焦段稀、相距远时误差会大得多</b>——尼康 Z 24-70 II 只给了 24.7 / 50 / 67.9 三个焦段，插到 30 mm 边缘 RMS 57 µm，两端焦段只有 14 / 20 µm，多半是凸轮猜偏了，提示里会单独警告。填的焦距离文件焦段不到 0.05% 就直接用那个焦段的原始数据。</p>
@@ -455,14 +485,16 @@ table.data tbody tr:hover{background:var(--panel-2)}
         <p class="note"><b>粘贴</b>：从 Excel / 专利表格复制多行多列，选中起始格 Ctrl+V 即整块填入（列顺序 Radius→厚度→玻璃→半孔径→圆锥→A4 A6 A8…），行数不够会自动补。</p>
         <p class="note"><b>非球面</b>：A4 A6 A8… 每项一列，列不够时最右会自动多出一列；表格可左右滚动。<b>扩展奇次非球面</b>（Zemax 的 <b>XOSPHERE</b>，富士等专利里印成 A3…A20 那种带奇数次的级数）表面类型列显示「扩展奇次」，系数格依次是 <b>Rn A1 A2 … AN</b>：z = 圆锥 + Σ A<sub>j</sub>·(r/Rn)<sup>j</sup>，数字就是文件 / 专利印的原值，不做换算；要手工把一面改成这种，在它第一个系数格写 <b>XODD</b>，格子会右移成 Rn A1 …；清空全部系数换回球面。同一颗镜头里偶次和扩展奇次混用时，表头上下两行分别标两种的项名。早先的写法（第一格写 <b>ODD</b>，后面是已除掉 Rn 的 r¹ r² r³ … 实际系数）照旧认。</p>
         <p class="note"><b>材料</b>：直接写牌号，内置 <b id="glassN">—</b> 种厂商目录玻璃（SCHOTT / OHARA / HOYA / HIKARI / CDGM / SUMITA / NHG / CHINA / SPECIAL 等 19 家），输入时会自动补全；重名可用 <b>牌号_目录</b> 指定（<b>H-ZF72A_CDGM</b>、<b>NBFD25_HOYA</b>、<b>SBSL7_OHARA</b>）。查不到的写 <b>nd/vd</b>（如 <b>1.7292/54.7</b>）或 6 位 <b>MIL 代码</b>（如 <b>517640</b>）按模型玻璃算；写 <b>nd/vd/ΔPg,F</b> 三段可指定反常色散。<b>玻璃偏移解</b>写成 <b>牌号~Δnd~Δνd</b>（如 <b>S-NBH52V~-0.00735~-2.6561</b>）：照搬基准玻璃的色散曲线形状、只把 n<sub>d</sub> 和 ν<sub>d</sub> 挪到偏移后的值，相对部分色散不变，对应 Zemax 的 <code>GLAS … 4 … Δnd Δνd</code>，专利仿真里用来还原没有等效牌号的元件。留空为空气。CODE V 的<b>数字式虚拟玻璃</b> <b>nnnnnn.vvvvvv</b>（如 <b>560412.639175</b> → n<sub>d</sub> 1.560412 / ν<sub>d</sub> 63.9175，整数部分 =(n<sub>d</sub>−1)×10⁶、小数部分 = ν<sub>d</sub>/100）也认，常见于複合型非球面的树脂层；认不出来整个面会被当成空气，所以宁可解错也要解。<b>但这只是兜底，解出的 ν<sub>d</sub> 已知不可信</b>——同一片树脂，原始文件写的是 1.56093 / 36.6，CODE V 重导出后按上式解出来是 63.9175。每遇到一个都会把面号和解出的值列进导入提示；<b>出现这种写法基本说明该文件是 CODE V 往返导出的产物</b>，建议回去用原始文件。</p>
-        <p class="note"><b>导入</b>：<b>CODE V .seq</b> 读面数据 / CIR 通光 / ASP 非球面 / STO / FNO / WL·WTW·REF / YRI·YAN / SETVIG 渐晕 / ZOO 多重结构 / 数字式虚拟玻璃；<b>Zemax .zmx</b>（UTF-16 或 UTF-8）读 SURF·CURV·DISZ·GLAS·CONI·PARM / STOP / FNUM·ENPD / FTYP·YFLN / WAVM·PWAV / VDYN·VCYN 渐晕 / MNUM·THIC·APER·FVCY 多重结构。两种格式走的是同一份解析代码，命令行批量转换用的也是它。</p>
+        <p class="note"><b>导出</b>：「导出 .zmx」「导出 .seq」把<b>当前镜头连同全部多重结构</b>存成 Zemax / CODE V 文件，写的就是本页此刻在算的东西——表里改过的数据（当前结构直接取表格，其它结构取各自存的厚度 / 半径 / 物距 / F/#）、离焦、视场（库里镜头用原文件那几个）、各结构的渐晕系数、真实通光、偏移解玻璃、偶次 / 扩展 / 奇次非球面和衍射面。.zmx 的孔径照本页的定义写（像方 F/#、工作 F/#、入瞳直径、光阑浮动）；.seq 一律写入瞳直径（CODE V 的 FNO 在近摄时是工作 F 数，和像方 F/# 不是一个量），CODE V 没有偏移解，那几片写成数字式模型玻璃，CODE V 自带目录里没有的少数新牌号（S-LAH66N、S-LAL18N 等）也写成模型玻璃，玻璃对照写在文件头注释里。导出的文件能用「导入」原样读回来；在 OpticStudio 24.2 和 CODE V 2026 里打开，各结构焦距 / 入瞳 / 总长和原文件一致。</p>
+        <p class="note"><b>导入</b>：<b>CODE V .seq</b> 读面数据 / CIR 通光 / ASP 非球面（到 J = r²⁰）/ SPS ODD 奇次非球面 / DIF DOE 衍射面 / STO / FNO·EPD / WL·WTW·REF / YRI·YAN / SETVIG 渐晕 / ZOO 多重结构 / 数字式虚拟玻璃（xxxxxx.yyyy 和 nd:νd 两种写法）；<b>Zemax .zmx</b>（UTF-16 或 UTF-8）读 SURF·CURV·DISZ·GLAS·CONI·PARM / STOP / FNUM·ENPD / FTYP·YFLN / WAVM·PWAV / VDYN·VCYN 渐晕 / MNUM·THIC·APER·FVCY 多重结构。两种格式走的是同一份解析代码，命令行批量转换用的也是它。</p>
       </div>
     </section>
 
     <!-- ---- 波长 ---- -->
     <section class="card">
       <header><h2>波长</h2><span class="grow"></span><span class="badge" id="wlBadge">—</span><button class="helpbtn" type="button" data-help="wlHelp" aria-controls="wlHelp" aria-expanded="false" aria-label="使用说明">?</button></header>
-      <div class="ldmbar">
+      <button class="mfold" type="button" data-fold="wlBar wlScroll" data-label="波长设置" aria-controls="wlBar wlScroll" aria-expanded="false"><span>展开波长设置</span><i aria-hidden="true">▾</i></button>
+      <div class="ldmbar mfolded" id="wlBar">
         <div class="ldmrow">
         <div class="btngrp">
           <button class="btn" id="wlAdd" type="button">加一行</button>
@@ -479,7 +511,7 @@ table.data tbody tr:hover{background:var(--panel-2)}
         </select>
         </div>
       </div>
-      <div class="wlscroll">
+      <div class="wlscroll mfolded" id="wlScroll">
         <table class="lde wl" id="wlTable">
           <thead><tr>
             <th style="min-width:32px">#</th>
@@ -709,13 +741,13 @@ table.data tbody tr:hover{background:var(--panel-2)}
   <div class="statuswrap">
     <div class="status">
       <span class="it"><b>DIM</b><i>毫米</i></span>
-      <span class="it key" id="stCfgWrap" style="display:none"><b>结构</b><i id="stCfg">—</i></span>
-      <span class="it key"><b>使用的 f/</b><i id="stFno">—</i></span>
-      <span class="it key"><b>EFL</b><i id="stEfl">—</i></span>
+      <span class="it key mkeep mwide" id="stCfgWrap" style="display:none"><b><span class="dl">结构</span><span class="ml">ZOOM</span></b><i id="stCfg">—</i></span>
+      <span class="it key mkeep"><b><span class="dl">使用的 f/</span><span class="ml">WFNO</span></b><i id="stFno">—</i></span>
+      <span class="it key mkeep"><b>EFL</b><i id="stEfl">—</i></span>
       <span class="it"><b>BFL</b><i id="stBfl">—</i></span>
       <span class="it"><b>入瞳 Φ</b><i id="stEpd">—</i></span>
-      <span class="it" title="放大倍率，物在无限远时为 0"><b>RED</b><i id="stRed">—</i></span>
-      <span class="it key" title="第 1 面到最末面顶点的距离"><b>OAL</b><i id="stOal">—</i></span>
+      <span class="it mkeep" title="放大倍率，物在无限远时为 0"><b>RED</b><i id="stRed">—</i></span>
+      <span class="it key mkeep" title="第 1 面到最末面顶点的距离"><b>OAL</b><i id="stOal">—</i></span>
       <span class="it"><b>最大像高</b><i id="stImg">—</i></span>
       <span class="it"><b>轴上 RMS</b><i id="stRms">—</i></span>
       <span class="grow"></span>

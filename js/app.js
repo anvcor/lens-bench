@@ -758,7 +758,8 @@
     var padZ = (maxZ - minZ) * 0.035 + 1;
 
     var W = maxZ - minZ + 2 * padZ, H = 2 * maxY;
-    var avail = paneW(ids.svg, 480);
+    // 按卡片的实际宽度画（手机上 340 px 左右）；原来至少画 480 px 宽，手机上右半边（后组、像面）被裁掉
+    var avail = paneW(ids.svg, 260);
     var scale = Math.min(avail / W, 560 / H);
     var PX = avail, PY = Math.max(110, H * scale);
     var xoff = (PX - W * scale) / 2;
@@ -1291,7 +1292,7 @@
         maxY = Math.max(maxY, Math.abs(p[1])); maxL = Math.max(maxL, s.track - p[0]); }); }); });
     });
     maxY = Math.max(maxY, 1) * 1.06;
-    var avail = paneW('layout', 480), padL = 96, padR = 24, top = 54, gapR = 0.2;    // gapR：两格之间的空档 / 格高（轨迹只画在空档里，不必留太大）
+    var avail = paneW('layout', 260), padL = avail < 480 ? 64 : 96, padR = avail < 480 ? 12 : 24, top = 54, gapR = 0.2;    // gapR：两格之间的空档 / 格高（轨迹只画在空档里，不必留太大）
     var hTot = 2 * maxY * (3 + 2 * gapR) + 0, scale = Math.min((avail - padL - padR) / maxL, Math.max(260, Math.min(1000, avail * 0.9)) / hTot);
     var PX = avail, PY = Math.round(top + hTot * scale + 38);
     var xImg = padL + maxL * scale + Math.max(0, (avail - padL - padR - maxL * scale) / 2);
@@ -1457,8 +1458,15 @@
   /* ================= MTF ================= */
   var PLOT = { w: 780, h: 330, l: 50, r: 82, t: 14, b: 44 };
   function renderMTF() {
-    PLOT.w = paneW('mtf', 560);
-    PLOT.h = Math.round(Math.max(340, Math.min(560, PLOT.w * 0.47)));   // 比例向 CODE V 靠
+    /* 按卡片实际宽度画。窄屏（手机）右边只留曲线末端频率数字的位置、高度放低一点，
+       原来至少画 560 px 宽，手机上右边一截连同末端标注被裁掉 */
+    PLOT.w = paneW('mtf', 300);
+    var narrow = PLOT.w < 520;
+    /* 宽屏：图框大小照旧（左 50 + 右 82 时的那个宽度，长宽比不变），整张往右平移 16 px，左右留白都是 66——
+       原来右边 82 只放末端频率数字，比左边多空三十多像素，整张图看着偏左。窄屏右边只留末端数字的位置 */
+    PLOT.l = narrow ? 50 : 66;
+    PLOT.r = narrow ? 36 : 66;
+    PLOT.h = Math.round(Math.max(narrow ? 260 : 340, Math.min(560, PLOT.w * 0.47)));   // 比例向 CODE V 靠
     var rows = last.mtf.rows, freqs = last.opt.freqs, svg = $('mtf');
     var cols = [css('--f1'), css('--f2'), css('--f3'), css('--f4')];
     var ink = css('--ink'), ink2 = css('--ink-2'), ink3 = css('--ink-3'), lineC = css('--line-2');
@@ -1477,7 +1485,7 @@
       g.push('<text x="' + (PLOT.l - 8) + '" y="' + (y + 4).toFixed(1) + '" fill="' + ink3 +
         '" font-size="10.5" text-anchor="end" font-family="IBM Plex Mono, monospace">' + (i === 0 ? '0' : i === 10 ? '1' : v.toFixed(1)) + '</text>');
     }
-    var step = niceStep(fovMax / Math.max(8, Math.min(24, Math.round(iw / 58))));
+    var step = niceStep(fovMax / Math.max(narrow ? 4 : 8, Math.min(24, Math.round(iw / 58))));
     for (var f = 0; f <= fovMax + step * 1e-6; f += step) {
       var x = X(Math.min(f, fovMax));
       g.push('<line x1="' + x.toFixed(1) + '" y1="' + PLOT.t + '" x2="' + x.toFixed(1) + '" y2="' + (PLOT.t + ih) +
@@ -1488,7 +1496,7 @@
     }
     g.push('<text x="' + (PLOT.l + iw / 2) + '" y="' + (PLOT.h - 7) + '" fill="' + ink2 + '" font-size="11" text-anchor="middle">' +
       (useH ? 'Y 实像高 (mm)' : '半视场角 (°)') + '</text>');
-    g.push('<text transform="translate(16,' + (PLOT.t + ih / 2) + ') rotate(-90)" fill="' + ink2 + '" font-size="11" text-anchor="middle">MTF</text>');
+    g.push('<text transform="translate(' + (PLOT.l - 34) + ',' + (PLOT.t + ih / 2) + ') rotate(-90)" fill="' + ink2 + '" font-size="11" text-anchor="middle">MTF</text>');
     g.push('<rect x="' + PLOT.l + '" y="' + PLOT.t + '" width="' + iw + '" height="' + ih + '" fill="none" stroke="' + css('--line') + '" stroke-width="1"/>');
 
     var lam0 = last.opt.lambdas[last.opt.primary].nm / 1000;
@@ -2252,6 +2260,44 @@
     renderLensList(this.value);
     if ($('ex').options.length) { $('ex').selectedIndex = 0; loadLens($('ex').value); histBase(); schedule(0); }
   });
+  /* ↑ / ↓ 逐颗翻镜头，像看幻灯片：焦点不在输入框 / 别的下拉里时，上下方向键换上一颗 / 下一颗，
+     翻到本品牌的头尾就接着翻进上一个 / 下一个品牌（整个库的头尾停住，不绕回）。
+     焦点在镜头下拉本身（收起状态）时也走这里，不用浏览器自带的换选——那个到品牌末尾就停了。
+     连按时下拉立刻跟着走，镜头等手停 150 ms 才载入：按住一路翻过去，不会每一颗都下载 + 重算一遍。
+     对比页 / 关于页开着时不管（那里没有这两个下拉）。 */
+  /* 手机上面数据表格 / 镜头信息卡 / 波长设置默认收起（CSS 只在窄屏认 .mfolded，电脑上按钮不显示、内容照常）。
+     展开 / 收起只记在本次打开的页面里，换镜头不会自己收回去；刷新后又是收起的 */
+  Array.prototype.forEach.call(document.querySelectorAll('.mfold'), function (b) {
+    b.addEventListener('click', function () {
+      var open = b.getAttribute('aria-expanded') !== 'true';
+      b.dataset.fold.split(/\s+/).forEach(function (id) { $(id).classList.toggle('mfolded', !open); });
+      b.setAttribute('aria-expanded', String(open));
+      b.firstElementChild.textContent = (open ? '收起' : '展开') + b.dataset.label;
+    });
+  });
+  var FLIP = { t: null };
+  function flipLens(dir) {
+    var ex = $('ex'), br = $('brand'), n = ex.options.length;
+    var i = ex.selectedIndex < 0 ? (dir > 0 ? 0 : n - 1) : ex.selectedIndex + dir;   // 导入的镜头不在列表里：从本品牌头 / 尾开始
+    if (i < 0 || i >= n) {
+      var bi = br.selectedIndex + dir;
+      if (bi < 0 || bi >= br.options.length) return;
+      br.selectedIndex = bi; renderLensList(br.value);
+      i = dir > 0 ? 0 : ex.options.length - 1;
+    }
+    ex.selectedIndex = i;
+    clearTimeout(FLIP.t);
+    FLIP.t = setTimeout(function () { loadLens(ex.value); histBase(); schedule(0); }, 150);
+  }
+  document.addEventListener('keydown', function (e) {
+    if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return;
+    if (e.ctrlKey || e.metaKey || e.altKey || e.shiftKey) return;
+    var t = e.target, tag = t && t.tagName;
+    if (t !== $('ex') && (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || (t && t.isContentEditable))) return;
+    if (document.querySelector('.sheet:not([hidden])')) return;
+    e.preventDefault();
+    flipLens(e.key === 'ArrowDown' ? 1 : -1);
+  });
 
   function syncFMode() {
     $('fovLabel').textContent = $('fmode').value === 'height' ? '最大实像高 mm' : '半视场 °';
@@ -2287,6 +2333,312 @@
     rd.readAsArrayBuffer(f);
     e.target.value = '';
   });
+
+  /* ================= 导出 .zmx / .seq =================
+     当前镜头连同全部多重结构，写成 Zemax .zmx（UTF-16 LE + BOM，OpticStudio 自己存的格式）或 CODE V .seq（ASCII）。
+     写的就是本页此刻在算的东西：
+       面：当前结构直接取表里的数，其它结构 = 当前表 + 该结构自己的覆盖项（厚度 / 半径 / 物距 / F/#）；「离焦」加在最后一个间隔上。
+       孔径：.zmx 照本页的定义写（像方 F/# → FNUM v 0、工作 F/# → FNUM v 1、入瞳直径 → ENPD，光阑浮动按本页算出的入瞳写 ENPD），
+             多结构时逐结构 APER。.seq 一律写入瞳直径（逐结构 ZOO EPD）：CODE V 的 FNO 在有限共轭下是工作 F 数，
+             和本页的像方 F/# 不是一个量，写 EPD 两边的入瞳才一致。
+       视场：库里镜头用原文件的视场表（state.vigH，按当前最大视场等比缩放），否则 0 / .3 / .5 / .7 / .85 / 1。
+       渐晕：各结构「按通光」的表（vigAuto）或文件系数，按视场插值。.zmx 写 VDY/VCY（逐结构 FVDY/FVCY），.seq 直接写 VUY/VLY。
+       通光：写了 CIR 的面和真实通光 sdAp（光阑面除外）→ .zmx 固定半口径 + 浮动通光（FLAP），.seq 的 CIR。
+       面型：偶次非球面到 r¹⁶ 用 EVENASPH，更高用 XASPHERE（.seq 的 ASP 到 J = r²⁰）；奇次 → XOSPHERE / SPS ODD；
+             衍射面 → BINARY_2 / DIF DOE（HCO = 相位 × λ₀/2π，λ₀ 取主波长，HOR 1）。写法照 patent-lens-to-excel 的 make_zmx / make_seq。
+       玻璃：目录牌号用 Zemax 的写法（glassdb.txt 的牌号已按 Zemax 目录补回标点），CODE V 写「去标点 + _厂家」；
+             偏移解 .zmx 用 GLAS 模式 4，CODE V 没有偏移解，写成数字式模型玻璃（色散换成模型的）；
+             nd/νd、MIL 代码、新牌号：Zemax ___BLANK 模型玻璃，CODE V 数字式 xxxxxx.yyyy。
+     导出的文件能用本页「导入」读回来。 */
+  var EX_LD = 0.5875618, EX_LF = 0.4861327, EX_LC = 0.6562725, EX_LG = 0.4358343;
+  function exN(v) { return isFinite(v) ? String(+(+v).toPrecision(15)) : '0'; }
+  function exAscii(s) {
+    return String(s == null ? '' : s).normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^\x20-\x7e]/g, '')
+      .replace(/["']/g, '').replace(/\s+/g, ' ').trim();
+  }
+  // 文件名：去掉品牌的中文名和「（专利）」这类来源标记，只留镜头名（索尼 Sony FE 12-24mm F2.8 GM（专利）→ Sony FE 12-24mm F2.8 GM）
+  function exFileName() {
+    var t = exLensName().replace(/[\\/:*?"<>|]+/g, '_').replace(/\s+/g, ' ').trim();
+    return (t || 'lens').slice(0, 120);
+  }
+  function exNV(fn) {
+    var nd = fn(EX_LD), nF = fn(EX_LF), nC = fn(EX_LC), ng = fn(EX_LG), vd = (nd - 1) / (nF - nC);
+    return { nd: nd, vd: vd, dp: (ng - nF) / (nF - nC) - (0.6438 - 0.001682 * vd) };
+  }
+  // 镜头名：品牌只留拉丁字母那半（索尼 Sony → Sony；其他 / 未分类 → 不要），不带「（专利）」这类来源标记
+  function exLensName() {
+    var e = state.libId ? idxEntry(state.libId) : null;
+    if (e) {
+      var b = String(e.brand || '').replace(/[⺀-鿿　-〿＀-￯]+/g, ' ').replace(/[\/]/g, ' ').replace(/\s+/g, ' ').trim();
+      var nm = String(e.name || e.id).trim();
+      return (b && nm.toLowerCase().indexOf(b.toLowerCase()) !== 0 ? b + ' ' : '') + nm;
+    }
+    return state.imp && IMPREC ? String(IMPREC.name || IMPREC.title || '导入的镜头') : '自定义处方';
+  }
+  /* 每个面的玻璃写法（和 parsePrescription 同样的取行规则，下标与 surfaces 对齐） */
+  function exGlasses(tx, S) {
+    var toks = [];
+    String(tx).split(/\r?\n/).forEach(function (ln) {
+      var raw = ln.trim();
+      if (!raw || raw[0] === '#' || raw.slice(0, 2) === '//') return;
+      var tk = raw.split(/[\s,;\t]+/).filter(function (t) { return t.length; });
+      if (tk.length < 2 || !isFinite(parseFloat(tk[1]))) return;
+      toks.push(tk.length > 2 && !NUMRE.test(tk[2]) ? tk[2] : null);
+    });
+    return S.map(function (s, i) {
+      var tok = toks[i];
+      if (!s.isGlass || !tok) return { kind: 'air' };
+      var nv = exNV(s.n), ofs = tok.indexOf('~'), base = ofs > 0 ? tok.slice(0, ofs) : tok;
+      var model = { kind: 'model', nd: nv.nd, vd: nv.vd, dp: nv.dp, label: s.matLabel };
+      if (base.indexOf('/') >= 0 || /^\d{6}$/.test(base.replace(/[.\s]/g, ''))) return model;
+      var m = OPT.parseMaterial(base);
+      if (!m || m.err || m.model || !m.fn) return model;
+      var name = String(m.glass || String(m.label || '').split(' (')[0] || base).trim().toUpperCase();
+      if (!name || /[\s"]/.test(name)) return model;
+      var b = exNV(m.fn), g = { kind: 'cat', name: name, cat: m.cat || '', nd: b.nd, vd: b.vd, dp: b.dp, ndO: nv.nd, vdO: nv.vd };
+      if (ofs > 0) { var op = tok.slice(ofs + 1).split('~'); g.kind = 'ofs'; g.dN = +op[0] || 0; g.dV = +op[1] || 0; }
+      return g;
+    });
+  }
+  function exInterp(xs, V, fr) {                     // 渐晕表（视场占比 xs）线性插值到 fr
+    var idx = xs.map(function (_, i) { return i; }).sort(function (a, b) { return xs[a] - xs[b]; });
+    var at = function (arr, f) {
+      var P = idx.map(function (i) { return [xs[i], +arr[i] || 0]; });
+      if (f <= P[0][0]) return P[0][1];
+      for (var k = 1; k < P.length; k++) if (f <= P[k][0]) { var t = P[k][0] > P[k - 1][0] ? (f - P[k - 1][0]) / (P[k][0] - P[k - 1][0]) : 0; return P[k - 1][1] + (P[k][1] - P[k - 1][1]) * t; }
+      return P[P.length - 1][1];
+    };
+    var o = {};
+    ['vuy', 'vly', 'vux', 'vlx'].forEach(function (k) { o[k] = fr.map(function (f) { return at(V[k], f); }); });
+    return o;
+  }
+  function exVig(ci, fr) {
+    var A = state.vigAuto && state.vigAuto[ci];
+    if (A && A.f && A.vuy && A.f.length === A.vuy.length) return exInterp(A.f, A, fr);
+    var c = state.cfgs && state.cfgs[ci], v = c && c.vig, H = state.vigH;
+    if (v && v.vuy && H && H.length === v.vuy.length) {
+      var hm = Math.max.apply(null, H.map(function (h) { return Math.abs(h) || 0; })) || 1;
+      return exInterp(H.map(function (h) { return Math.abs(h) / hm; }),
+        { vuy: v.vuy, vly: v.vly || v.vuy, vux: v.vux || v.vuy, vlx: v.vlx || v.vux || v.vuy }, fr);
+    }
+    return null;
+  }
+  /* 整颗镜头的导出模型：视场、各结构的面值 / 物距 / 孔径 / 入瞳 / 渐晕 */
+  function exModel() {
+    var st = last.st, opt = last.opt, S = last.surfaces, n = S.length, warn = [];
+    var cs = state.cfgs && state.cfgs.length ? state.cfgs : null;
+    if (cs && state.rows.length !== n) { warn.push('表格行数和处方面数对不上（有空行？），只导出当前结构。'); cs = null; }
+    var H = state.vigH, fr = null;
+    if (H && H.length >= 2 && H.length <= 12) {
+      var hm = Math.max.apply(null, H.map(function (h) { return Math.abs(h) || 0; }));
+      if (hm > 0) fr = H.map(function (h) { return Math.abs(h) / hm; }).filter(function (f, i, a) { return a.indexOf(f) === i; });
+    }
+    if (!fr || fr.length < 2) fr = [0, 0.3, 0.5, 0.7, 0.85, 1];
+    fr.sort(function (a, b) { return a - b; });
+    var cur = cs ? state.cfg : 0, name = exLensName();
+    var cfgs = (cs || [null]).map(function (c, ci) {
+      var isCur = !cs || ci === cur, T = S.map(function (s) { return s.T; }), R = S.map(function (s) { return s.R; });
+      if (!isCur) {
+        Object.keys(c.thi || {}).forEach(function (k) { if (+k < n && isFinite(+c.thi[k])) T[+k] = +c.thi[k]; });
+        Object.keys(c.rdy || {}).forEach(function (k) { if (+k < n && isFinite(+c.rdy[k])) R[+k] = +c.rdy[k]; });
+      }
+      var obj = isCur ? st.objd : (c.obj == null ? Infinity : c.obj), fno = isCur || c.fno == null ? st.fno : c.fno;
+      var S2 = S.map(function (s, i) { return (T[i] === s.T && R[i] === s.R) ? s : Object.assign({}, s, { T: T[i], R: R[i] }); });
+      var sys = OPT.buildSystem(S2, Object.assign({}, opt, { fno: fno, epd: fno, objDist: obj }));
+      return { title: (c && c.title) || name, T: T, R: R, obj: sys.objDist, fno: fno, epd: sys.epd, vig: exVig(cs ? ci : state.cfg, fr) };
+    });
+    return { name: name, S: S, n: n, st: st, opt: opt, fr: fr, fv: fr.map(function (f) { return +(f * st.fov).toPrecision(12); }),
+             cfgs: cfgs, gl: exGlasses(st.tx, S), defoc: opt.defocus || 0, warn: warn,
+             sdAp: state.sdAp && state.sdAp.length === n ? state.sdAp : null };
+  }
+  function exVary(M, key) {                          // 各结构值不全相同的那几行
+    var out = [];
+    for (var i = 0; i < M.n; i++) if (M.cfgs.some(function (c) { return Math.abs(c[key][i] - M.cfgs[0][key][i]) > 1e-12; })) out.push(i);
+    return out;
+  }
+  function exAp(M, i, s) { return s.sd || (i !== M.opt.stopIdx && M.sdAp && M.sdAp[i]) || 0; }
+  function exBfl(M, c, i) { return c.T[i] + (i === M.n - 1 ? M.defoc : 0); }
+
+  function exZmx(M) {
+    var st = M.st, opt = M.opt, L = [], warn = M.warn.slice(), gcat = [], nF = M.fv.length, nW = opt.lambdas.length, C0 = M.cfgs[0];
+    var rep = function (v) { var a = []; for (var i = 0; i < nF; i++) a.push(v); return a.join(' '); };
+    var apVal = st.apmode === 'fnoinf' || st.apmode === 'fno' ? function (c) { return c.fno; } : function (c) { return c.epd; };
+    // 光阑浮动：照原文件写 FLOA（Float By Stop Size），光阑面写固定半口径、不加 FLAP，也不进 MCE 的 APER
+    var floa = st.apmode === 'stop' && !!(M.S[opt.stopIdx] && M.S[opt.stopIdx].sd);
+    var vz = function (c, k, f) { var v = c.vig; if (!v) return 0;
+      return k === 'VDX' ? (v.vlx[f] - v.vux[f]) / 2 : k === 'VDY' ? (v.vly[f] - v.vuy[f]) / 2 : k === 'VCX' ? (v.vux[f] + v.vlx[f]) / 2 : (v.vuy[f] + v.vly[f]) / 2; };
+    L.push('VERS 240529 0 0 0', 'MODE SEQ', 'NAME ' + String(C0.title).replace(/[\r\n]+/g, ' '),
+      'NOTE 0 ' + M.name.replace(/[\r\n]+/g, ' ') + ' - exported by lens-bench ' + new Date().toISOString().slice(0, 10),
+      'UNIT MM X W X CM MR CPMM',
+      st.apmode === 'fnoinf' ? 'FNUM ' + exN(C0.fno) + ' 0' : st.apmode === 'fno' ? 'FNUM ' + exN(C0.fno) + ' 1' : floa ? 'FLOA' : 'ENPD ' + exN(C0.epd),
+      'GCAT', 'RAIM 0 ' + (st.aim ? 2 : 0) + ' 1 1 0 0 0 0 0 1',
+      'FTYP ' + (st.fmode === 'height' ? 3 : 0) + ' 0 ' + nF + ' ' + nW + ' 0 0 0 ' + nF,
+      'XFLN ' + rep(0), 'YFLN ' + M.fv.map(exN).join(' '), 'FWGN ' + rep(1));
+    ['VDX', 'VDY', 'VCX', 'VCY'].forEach(function (k) { L.push(k + 'N ' + M.fv.map(function (_, f) { return exN(vz(C0, k, f)); }).join(' ')); });
+    L.push('VANN ' + rep(0));
+    opt.lambdas.forEach(function (l, i) { L.push('WAVM ' + (i + 1) + ' ' + exN(l.nm / 1000) + ' ' + exN(l.w)); });
+    L.push('PWAV ' + (opt.primary + 1));
+    L.push('SURF 0', '  TYPE STANDARD', '  CURV 0 0 0 0 0 ""', '  DISZ ' + (isFinite(C0.obj) ? exN(C0.obj) : 'INFINITY'));
+    var XD = function (j, v) { return '  XDAT ' + j + ' ' + (+v).toExponential(12).toUpperCase() + ' 0 0 0.000000000000E+00 0.000000000000E+00 0 ""'; };
+    M.S.forEach(function (s, i) {
+      var A = s.asph || [], ty = s.doe ? 'BINARY_2' : s.aspo ? 'XOSPHERE' : A.length > 7 ? 'XASPHERE' : A.length ? 'EVENASPH' : 'STANDARD', k;
+      L.push('SURF ' + (i + 1));
+      if (i === opt.stopIdx) L.push('  STOP');
+      L.push('  TYPE ' + ty, '  CURV ' + (C0.R[i] ? exN(1 / C0.R[i]) : '0') + ' 0 0 0 0 ""');
+      if (ty === 'BINARY_2') {
+        if (s.aspo) warn.push('S' + (i + 1) + '：衍射面上的奇次非球面项 Zemax Binary 2 写不下，.zmx 里略去了。');
+        if (A.length > 7) warn.push('S' + (i + 1) + '：衍射面上 r¹⁶ 以上的非球面项 Binary 2 写不下，.zmx 里略去了。');
+        L.push('  PARM 0 ' + exN(s.doe.m));
+      }
+      if (ty === 'EVENASPH' || ty === 'BINARY_2') { L.push('  PARM 1 0'); for (k = 0; k < 7; k++) L.push('  PARM ' + (k + 2) + ' ' + exN(A[k] || 0)); }
+      if (ty === 'XASPHERE') { L.push(XD(1, A.length + 1), XD(2, 1), XD(3, 0)); A.forEach(function (v, j) { L.push(XD(j + 4, v)); }); }
+      if (ty === 'XOSPHERE') { L.push(XD(1, s.aspo.length), XD(2, 1)); s.aspo.forEach(function (v, j) { L.push(XD(j + 3, v)); }); }
+      if (ty === 'BINARY_2') { L.push(XD(1, s.doe.b.length), XD(2, 1)); s.doe.b.forEach(function (v, j) { L.push(XD(j + 3, v / s.doe.m)); }); }
+      L.push('  DISZ ' + exN(exBfl(M, C0, i)));
+      var g = M.gl[i];
+      if (g.kind === 'model') L.push('  GLAS ___BLANK 1 0 ' + exN(g.nd) + ' ' + exN(g.vd) + ' ' + exN(g.dp) + ' 0 0 0 0 0');
+      else if (g.kind !== 'air') {
+        if (g.cat && gcat.indexOf(g.cat) < 0) gcat.push(g.cat);
+        L.push('  GLAS ' + g.name + (g.kind === 'ofs' ? ' 4 0 ' : ' 0 0 ') + exN(g.nd) + ' ' + exN(g.vd) + ' 0 0 0 0 ' +
+               (g.kind === 'ofs' ? exN(g.dN) + ' ' + exN(g.dV) : '0 0'));
+      }
+      if (s.k) L.push('  CONI ' + exN(s.k));
+      var a = exAp(M, i, s);
+      if (a > 0) L.push('  DIAM ' + exN(a) + ' 1 0 0 1 ""');
+      if (a > 0 && !(floa && i === opt.stopIdx)) L.push('  FLAP 0 ' + exN(a) + ' 0');
+    });
+    L.push('SURF ' + (M.n + 1), '  TYPE STANDARD', '  CURV 0 0 0 0 0 ""', '  DISZ 0');
+    if (M.cfgs.length > 1) {
+      var mce = function (op, p, vals) { vals.forEach(function (v, ci) { L.push(op + ' ' + p + ' ' + (ci + 1) + ' ' + v + ' 0 0 0 1 1 1 0 0'); }); };
+      L.push('MNUM ' + M.cfgs.length + ' 1');
+      M.cfgs.forEach(function (c, ci) { L.push('LTTL 0 ' + (ci + 1) + ' "' + String(c.title).replace(/["\r\n]+/g, ' ') + '" 0 0 0 1 1 1 0 0'); });
+      mce('THIC', 0, M.cfgs.map(function (c) { return isFinite(c.obj) ? exN(c.obj) : '1.00000000E+10'; }));
+      exVary(M, 'T').forEach(function (i) { mce('THIC', i + 1, M.cfgs.map(function (c) { return exN(exBfl(M, c, i)); })); });
+      exVary(M, 'R').forEach(function (i) { mce('CRVT', i + 1, M.cfgs.map(function (c) { return c.R[i] ? exN(1 / c.R[i]) : '0'; })); });
+      if (!floa) mce('APER', 0, M.cfgs.map(function (c) { return exN(apVal(c)); }));
+      ['FVDX', 'FVDY', 'FVCX', 'FVCY'].forEach(function (op) {
+        M.fv.forEach(function (_, f) {
+          var vals = M.cfgs.map(function (c) { return vz(c, op.slice(1), f); });
+          if (vals.some(function (v) { return Math.abs(v) > 1e-12; })) mce(op, f + 1, vals.map(exN));
+        });
+      });
+    }
+    L[L.indexOf('GCAT')] = 'GCAT ' + (gcat.length ? gcat.join(' ') : 'SCHOTT');
+    return { text: L.join('\r\n') + '\r\n', warn: warn };
+  }
+
+  /* 内置玻璃库里有、CODE V 2026 自带目录里没有的牌号（2026-11-02 按本机 E:/CODEV2026/glass/*.xml 逐家比对，3190 个里缺这 31 个）。
+     .seq 里写了目录里没有的牌号，CODE V 读到那一行就报错停下，后面的面和多重结构全丢（佳能 EF 200 F2L 的 S-LAH66N 实测）——
+     这些照样写成数字式模型玻璃。其余 18 家厂商名两边一致。 */
+  var EX_CVMISS = 'OHARA:SAPL,SLAH66N,SLAL18N,STIH53WN CDGM:DFK61B,DFK61B25,HK9LAGT,HWS6GT,HWS8 ' +
+    'ZEON:330R,480R,K26R0,K26R15,K26R25,K26R40,K26R60,K26R80,ZEONEX330R2016,ZEONEX330R2017,ZEONEX350R2016,ZEONEX350R2017,' +
+    'ZEONEX480R2016,ZEONEX480R2017,ZEONEXE48R2016,ZEONEXE48R2017,ZEONEXF52R2016,ZEONEXF52R2017,ZEONEXK22RK26R2016,' +
+    'ZEONEXK22RK26R2017,ZEONEXT62R2016,ZEONEXT62R2017';
+  function exCvHas(name, cat) {
+    var m = new RegExp('(^| )' + cat.toUpperCase() + ':([^ ]*)').exec(EX_CVMISS);
+    return !m || m[2].split(',').indexOf(name) < 0;
+  }
+  function exSeq(M) {
+    var st = M.st, opt = M.opt, L = [], warn = M.warn.slice(), C0 = M.cfgs[0], nF = M.fv.length, lam0 = opt.lambdas[opt.primary].nm;
+    var wrap = function (tag, vals) {               // CODE V 续行：行尾 &，续行以空格开头
+      var cur = tag;
+      vals.forEach(function (v) { if (cur.length + 1 + v.length > 72 && cur !== tag) { L.push(cur + ' &'); cur = ' ' + v; } else cur += ' ' + v; });
+      L.push(cur);
+    };
+    var cvModel = function (nd, vd) {
+      if (nd >= 1 && nd < 2 && vd > 0 && vd < 100) {
+        var y = (vd / 100).toFixed(6).split('.')[1].replace(/0+$/, '') || '0';
+        return ('000000' + Math.round((nd - 1) * 1e6)).slice(-6) + '.' + y;
+      }
+      return exN(nd) + ':' + exN(vd);
+    };
+    var wo = opt.lambdas.map(function (l, i) { return i; }).sort(function (a, b) { return opt.lambdas[b].nm - opt.lambdas[a].nm; });
+    var ang = st.fmode !== 'height', fv = M.fv.map(exN), ones = M.fv.map(function () { return '1'; }), zeros = M.fv.map(function () { return '0'; });
+    var gnote = [];
+    L.push('RDM;LEN "' + exAscii(M.name) + ' - exported by lens-bench ' + new Date().toISOString().slice(0, 10) + '"');
+    L.push("TITLE '" + (exAscii(C0.title) || exAscii(M.name) || 'LENS') + "'");
+    L.push('EPD   ' + exN(C0.epd), 'DIM   M');
+    L.push('WL    ' + wo.map(function (i) { return exN(opt.lambdas[i].nm); }).join(' '));
+    L.push('REF   ' + (wo.indexOf(opt.primary) + 1));
+    L.push('WTW   ' + wo.map(function (i) { return exN(opt.lambdas[i].w); }).join(' '));
+    L.push("INI   '   '");
+    wrap(ang ? 'XAN  ' : 'XRI  ', zeros); wrap(ang ? 'YAN  ' : 'YRI  ', fv);
+    if (ang && Math.max.apply(null, M.fv) > 90) L.push('WID   Y');
+    wrap('WTF  ', ones);
+    if (C0.vig) ['vux', 'vlx', 'vuy', 'vly'].forEach(function (k) { wrap(k.toUpperCase() + '  ', C0.vig[k].map(exN)); });
+    L.push('SO    0 ' + (isFinite(C0.obj) ? exN(C0.obj) : '0.1e11'));
+    var CV = 'ABCDEFGHJ';
+    M.S.forEach(function (s, i) {
+      var g = M.gl[i], gs = '';
+      if (g.kind === 'model') { gs = ' ' + cvModel(g.nd, g.vd); gnote.push('S' + (i + 1) + ' ' + exAscii(g.label) + ' -> ' + gs.trim()); }
+      else if (g.kind === 'ofs') { gs = ' ' + cvModel(g.ndO, g.vdO); gnote.push('S' + (i + 1) + ' ' + g.name + ' offset dNd ' + exN(g.dN) + ' dVd ' + exN(g.dV) + ' (CODE V has no offset glass) -> model ' + gs.trim()); }
+      else if (g.kind === 'cat') {
+        var cvn = g.name.replace(/[^A-Za-z0-9]/g, '').toUpperCase();
+        if (g.cat && exCvHas(cvn, g.cat)) { gs = ' ' + cvn + '_' + g.cat.toUpperCase(); gnote.push('S' + (i + 1) + ' ' + gs.trim() + '  nd ' + g.nd.toFixed(6) + ' vd ' + g.vd.toFixed(4)); }
+        else {
+          gs = ' ' + cvModel(g.nd, g.vd);
+          gnote.push('S' + (i + 1) + ' ' + g.name + (g.cat ? ' (' + g.cat + ', not in CODE V catalog)' : ' (no catalog)') + ' -> model ' + gs.trim());
+          if (g.cat) warn.push('S' + (i + 1) + ' 的 ' + g.name + '（' + g.cat + '）CODE V 自带目录里没有，.seq 里写成模型玻璃 nd ' + g.nd.toFixed(5) + ' / νd ' + g.vd.toFixed(2) + '。');
+        }
+      }
+      L.push('S     ' + exN(C0.R[i] || 0) + ' ' + exN(exBfl(M, C0, i)) + gs);
+      var a = exAp(M, i, s);
+      if (a > 0) L.push('  CIR ' + exN(a));
+      if (i === opt.stopIdx) L.push('  STO');
+      var A = s.asph || [];
+      if (s.aspo) {
+        L.push('  SPS ODD 0', '  SCO K ' + exN(s.k || 0));
+        s.aspo.forEach(function (v, j) { if (v) L.push('  SCO AR' + (j + 1) + ' ' + exN(v)); });
+      } else if (A.length || s.k) {
+        if (A.length > 9) warn.push('S' + (i + 1) + '：r²⁰ 以上的非球面项 CODE V 的 ASP 写不下，.seq 里略去了。');
+        L.push('  ASP', '  K   ' + exN(s.k || 0), '  CUF 0');
+        for (var q = 0; q < Math.min(A.length, 9); q += 4) {
+          var grp = [];
+          for (var j = q; j < Math.min(q + 4, A.length, 9); j++) grp.push(CV[j] + ' ' + exN(A[j] || 0));
+          L.push('  ' + grp.join('; '));
+        }
+      }
+      if (s.doe) {
+        L.push('  DIF DOE', '  HOR 1', '  HWL ' + exN(lam0) + '; HCT R');
+        L.push('  ' + s.doe.b.map(function (b, j) { return 'HCO C' + (j + 1) + ' ' + exN(b * lam0 / 1e6 / (2 * Math.PI)); }).join('; '));
+      }
+    });
+    L.push('SI    0 0');
+    if (M.cfgs.length > 1) {
+      L.push('ZOO   ' + M.cfgs.length, 'ZOO   TIT');
+      M.cfgs.forEach(function (c, ci) { L.push('TIT   Z' + (ci + 1) + ' "' + (exAscii(c.title) || 'Z' + (ci + 1)) + '"'); });
+      wrap('ZOO   EPD', M.cfgs.map(function (c) { return exN(c.epd); }));
+      wrap('ZOO   THI S0', M.cfgs.map(function (c) { return isFinite(c.obj) ? exN(c.obj) : '0.1e11'; }));
+      exVary(M, 'T').forEach(function (i) { wrap('ZOO   THI S' + (i + 1), M.cfgs.map(function (c) { return exN(exBfl(M, c, i)); })); });
+      exVary(M, 'R').forEach(function (i) { wrap('ZOO   RDY S' + (i + 1), M.cfgs.map(function (c) { return exN(c.R[i] || 0); })); });
+      if (M.cfgs.some(function (c) { return c.vig; }))
+        ['vuy', 'vly', 'vux', 'vlx'].forEach(function (k) {
+          M.fv.forEach(function (_, f) { wrap('ZOO   ' + k.toUpperCase() + ' F' + (f + 1), M.cfgs.map(function (c) { return exN(c.vig ? c.vig[k][f] : 0); })); });
+        });
+    }
+    L.push('GO');
+    // 玻璃对照写在文件头的注释里：CODE V 目录里缺哪块，照这里的 nd / νd 换成模型玻璃即可
+    var head = ['! Glasses (page catalog nd / vd at d-line):'].concat(gnote.map(function (t) { return '!   ' + t; }));
+    return { text: head.concat(L).join('\r\n') + '\r\n', warn: warn };
+  }
+  function exSave(kind) {
+    if (!last) return;
+    var M = exModel(), r = kind === 'zmx' ? exZmx(M) : exSeq(M), blob;
+    if (kind === 'zmx') {                            // UTF-16 LE + BOM
+      var s = r.text, b = new Uint8Array(2 + 2 * s.length); b[0] = 0xFF; b[1] = 0xFE;
+      for (var i = 0; i < s.length; i++) { var c = s.charCodeAt(i); b[2 + 2 * i] = c & 255; b[3 + 2 * i] = c >> 8; }
+      blob = new Blob([b], { type: 'application/octet-stream' });
+    } else blob = new Blob([r.text.replace(/[^\x00-\x7e]/g, '?')], { type: 'text/plain' });
+    var a = document.createElement('a'), btn = $(kind === 'zmx' ? 'expZmx' : 'expSeq');
+    a.href = URL.createObjectURL(blob);
+    a.download = exFileName() + '.' + kind; a.click();
+    setTimeout(function () { URL.revokeObjectURL(a.href); }, 5000);
+    flashBtn(btn, '已导出 ✓', true);
+    showMsgs(['已导出 ' + a.download + '：' + M.n + ' 面' + (M.cfgs.length > 1 ? '，' + M.cfgs.length + ' 个结构' : '') + '，' + M.fv.length + ' 个视场' +
+      (kind === 'seq' ? '。孔径写的是入瞳直径（EPD）；玻璃对照写在文件头注释里，CODE V 目录里缺的牌号照那里的 nd / νd 换成模型玻璃。' : '。')].concat(r.warn));
+  }
+  $('expZmx').addEventListener('click', function () { exSave('zmx'); });
+  $('expSeq').addEventListener('click', function () { exSave('seq'); });
 
   function syncApMode() {
     var m = $('apmode').value;
