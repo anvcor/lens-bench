@@ -786,7 +786,9 @@
     var P = function (z, y) { return X(z).toFixed(3) + ' ' + Y(y).toFixed(3); };
     /* 线宽、虚线、标注都按「屏幕上的像素」定：data-sw / data-da / data-tx 记下倍率 1 时的值，
        Layout 放大时 layApply 按倍率反除（见 layMarks），放大只让几何变大，线条和字不跟着变粗变大。 */
-    var sw = function (w) { return ' stroke-width="' + w + '" data-sw="' + w + '"'; };
+    /* 手机（窄于 480）线宽整体 × 0.75：镜片轮廓 1.15 → 0.86、光线 1.05 → 0.79，图缩到三百来像素宽时原来的线显得粗 */
+    var lwK = avail < 480 ? 0.75 : 1;
+    var sw = function (w) { w = +(w * lwK).toFixed(3); return ' stroke-width="' + w + '" data-sw="' + w + '"'; };
     var dash = function (da) { return da ? ' stroke-dasharray="' + da + '" data-da="' + da + '"' : ''; };
     var label = function (ax, ay, dx, dy, anchor, text) {
       return '<g data-tx="' + ax.toFixed(3) + '" data-ty="' + ay.toFixed(3) + '" transform="translate(' + ax.toFixed(3) + ' ' + ay.toFixed(3) + ')">' +
@@ -1324,7 +1326,8 @@
     var axisY = [0, 1, 2].map(function (i) { return top + (maxY + i * 2 * maxY * (1 + gapR)) * scale; });
     var X = function (d) { return xImg - d * scale; };
     var g = [];
-    var sw = function (w) { return ' stroke-width="' + w + '" data-sw="' + w + '"'; };
+    var lwK = narrow ? 0.75 : 1;    // 手机线宽整体 × 0.75，同 drawLayout
+    var sw = function (w) { w = +(w * lwK).toFixed(3); return ' stroke-width="' + w + '" data-sw="' + w + '"'; };
     var dash = function (da) { return da ? ' stroke-dasharray="' + da + '" data-da="' + da + '"' : ''; };
     var label = function (ax, ay, dx, dy, anchor, text, col, size, weight) {
       return '<g data-tx="' + ax.toFixed(3) + '" data-ty="' + ay.toFixed(3) + '" transform="translate(' + ax.toFixed(3) + ' ' + ay.toFixed(3) + ')">' +
@@ -1510,11 +1513,12 @@
     var X = function (f) { return PLOT.l + iw * f / fovMax; };
     var Y = function (m) { return PLOT.t + ih * (1 - Math.max(0, Math.min(1, m))); };
     var g = [];
+    var gw = narrow ? 0.7 : 1;      // 手机上网格 / 图框也细一点（真机 3 倍屏上 0.7 px ≈ 2 个物理像素，照样清楚）
 
     for (var i = 0; i <= 10; i++) {
       var v = i / 10, y = Y(v);
       g.push('<line x1="' + PLOT.l + '" y1="' + y.toFixed(1) + '" x2="' + (PLOT.l + iw) + '" y2="' + y.toFixed(1) +
-        '" stroke="' + lineC + '" stroke-width="1"/>');
+        '" stroke="' + lineC + '" stroke-width="' + gw + '"/>');
       g.push('<text x="' + (PLOT.l - 8) + '" y="' + (y + 4).toFixed(1) + '" fill="' + ink3 +
         '" font-size="10.5" text-anchor="end" font-family="IBM Plex Mono, monospace">' + (i === 0 ? '0' : i === 10 ? '1' : v.toFixed(1)) + '</text>');
     }
@@ -1522,22 +1526,22 @@
     for (var f = 0; f <= fovMax + step * 1e-6; f += step) {
       var x = X(Math.min(f, fovMax));
       g.push('<line x1="' + x.toFixed(1) + '" y1="' + PLOT.t + '" x2="' + x.toFixed(1) + '" y2="' + (PLOT.t + ih) +
-        '" stroke="' + lineC + '" stroke-width="1"/>');
-      g.push('<line x1="' + x.toFixed(1) + '" y1="' + (PLOT.t + ih) + '" x2="' + x.toFixed(1) + '" y2="' + (PLOT.t + ih + 5) + '" stroke="' + ink3 + '" stroke-width="1"/>');
+        '" stroke="' + lineC + '" stroke-width="' + gw + '"/>');
+      g.push('<line x1="' + x.toFixed(1) + '" y1="' + (PLOT.t + ih) + '" x2="' + x.toFixed(1) + '" y2="' + (PLOT.t + ih + 5) + '" stroke="' + ink3 + '" stroke-width="' + gw + '"/>');
       g.push('<text x="' + x.toFixed(1) + '" y="' + (PLOT.t + ih + 17) + '" fill="' + ink3 +
         '" font-size="10.5" text-anchor="middle" font-family="IBM Plex Mono, monospace">' + (+f.toFixed(2)) + '</text>');
     }
     g.push('<text x="' + (PLOT.l + iw / 2) + '" y="' + (PLOT.h - 7) + '" fill="' + ink2 + '" font-size="11" text-anchor="middle">' +
       (useH ? 'Y 实像高 (mm)' : '半视场角 (°)') + '</text>');
     g.push('<text transform="translate(' + (PLOT.l - 34) + ',' + (PLOT.t + ih / 2) + ') rotate(-90)" fill="' + ink2 + '" font-size="11" text-anchor="middle">MTF</text>');
-    g.push('<rect x="' + PLOT.l + '" y="' + PLOT.t + '" width="' + iw + '" height="' + ih + '" fill="none" stroke="' + css('--line') + '" stroke-width="1"/>');
+    g.push('<rect x="' + PLOT.l + '" y="' + PLOT.t + '" width="' + iw + '" height="' + ih + '" fill="none" stroke="' + css('--line') + '" stroke-width="' + gw + '"/>');
 
     var lam0 = last.opt.lambdas[last.opt.primary].nm / 1000;
     freqs.forEach(function (nu) {
       var dl = OPT.diffractionMTF(nu, lam0, last.sys.fno);
       if (dl <= 0.002) return;
       g.push('<line x1="' + PLOT.l + '" y1="' + Y(dl).toFixed(1) + '" x2="' + (PLOT.l + iw) + '" y2="' + Y(dl).toFixed(1) +
-        '" stroke="' + ink3 + '" stroke-width="1.2" stroke-dasharray="2 4" opacity=".7"/>');
+        '" stroke="' + ink3 + '" stroke-width="' + (narrow ? 0.9 : 1.2) + '" stroke-dasharray="2 4" opacity=".7"/>');
     });
 
     var labels = [];
@@ -1545,9 +1549,9 @@
       var c = cols[k % 4];
       ['T', 'S'].forEach(function (kind) {
         var pts = rows.map(function (r) { return [X(xOf(r)), Y(r[kind][k])]; });
-        // 手机上图按 1:1 画，2 px 的曲线在小图上显得粗，窄屏细一点、虚线节距跟着缩
-        g.push('<path d="' + pchip(pts) + '" fill="none" stroke="' + c + '" stroke-width="' + (narrow ? 1.4 : 2) + '" stroke-linejoin="round" stroke-linecap="round"' +
-          (kind === 'S' ? ' stroke-dasharray="' + (narrow ? '4 3' : '5 3.5') + '"' : '') + '/>');
+        // 手机上图按 1:1 画，2 px 的曲线在小图上显得粗，窄屏细一点（1.4 → 1.0）、虚线节距跟着缩
+        g.push('<path d="' + pchip(pts) + '" fill="none" stroke="' + c + '" stroke-width="' + (narrow ? 1 : 2) + '" stroke-linejoin="round" stroke-linecap="round"' +
+          (kind === 'S' ? ' stroke-dasharray="' + (narrow ? '3.5 2.5' : '5 3.5') + '"' : '') + '/>');
       });
       labels.push({ y: Y(rows[rows.length - 1].T[k]), text: nu + '', c: c });
     });
@@ -4297,12 +4301,12 @@
     if (!byH) xmax = 1;
     var X = function (v) { return P.l + iw * Math.max(0, Math.min(1, v / xmax)); };
     var Y = function (m) { return P.t + ih * (1 - Math.max(0, Math.min(1, m))); };
-    var g = [];
+    var g = [], gw = narrow ? 0.7 : 1;      // 手机上网格 / 图框细一点，同主页 MTF
 
     for (var i = 0; i <= 10; i++) {
       var v = i / 10, y = Y(v);
       g.push('<line x1="' + P.l + '" y1="' + y.toFixed(1) + '" x2="' + (P.l + iw) + '" y2="' + y.toFixed(1) +
-        '" stroke="' + lineC + '" stroke-width="1"/>');
+        '" stroke="' + lineC + '" stroke-width="' + gw + '"/>');
       g.push('<text x="' + (P.l - 8) + '" y="' + (y + 4).toFixed(1) + '" fill="' + ink3 +
         '" font-size="10.5" text-anchor="end" font-family="IBM Plex Mono, monospace">' + (i === 0 ? '0' : i === 10 ? '1' : v.toFixed(1)) + '</text>');
     }
@@ -4310,14 +4314,14 @@
     for (var f = 0; f <= xmax + step * 1e-6; f += step) {
       var x = X(Math.min(f, xmax));
       g.push('<line x1="' + x.toFixed(1) + '" y1="' + P.t + '" x2="' + x.toFixed(1) + '" y2="' + (P.t + ih) +
-        '" stroke="' + lineC + '" stroke-width="1"/>');
+        '" stroke="' + lineC + '" stroke-width="' + gw + '"/>');
       g.push('<text x="' + x.toFixed(1) + '" y="' + (P.t + ih + 17) + '" fill="' + ink3 +
         '" font-size="10.5" text-anchor="middle" font-family="IBM Plex Mono, monospace">' + (+f.toFixed(2)) + '</text>');
     }
     g.push('<text x="' + (P.l + iw / 2) + '" y="' + (H - 8) + '" fill="' + ink2 + '" font-size="11" text-anchor="middle">' +
       (byH ? 'Y 实像高 (mm)' : '归一化视场') + '</text>');
     g.push('<text transform="translate(16,' + (P.t + ih / 2) + ') rotate(-90)" fill="' + ink2 + '" font-size="11" text-anchor="middle">MTF</text>');
-    g.push('<rect x="' + P.l + '" y="' + P.t + '" width="' + iw + '" height="' + ih + '" fill="none" stroke="' + css('--line') + '" stroke-width="1"/>');
+    g.push('<rect x="' + P.l + '" y="' + P.t + '" width="' + iw + '" height="' + ih + '" fill="none" stroke="' + css('--line') + '" stroke-width="' + gw + '"/>');
 
     var labels = [];
     sets.forEach(function (t) {
@@ -4326,7 +4330,7 @@
         var c = t.cols[q % t.cols.length];
         var dl = OPT.diffractionMTF(nu, lam0, t.R.sys.fno);
         if (dl > 0.002) g.push('<line x1="' + P.l + '" y1="' + Y(dl).toFixed(1) + '" x2="' + (P.l + iw) + '" y2="' + Y(dl).toFixed(1) +
-          '" stroke="' + c + '" stroke-width="1" stroke-dasharray="2 5" opacity=".45"/>');
+          '" stroke="' + c + '" stroke-width="' + gw + '" stroke-dasharray="2 5" opacity=".45"/>');
         var kinds = S.ts === 't' ? [['T', 0]] : S.ts === 's' ? [['S', 1]]
                   : S.ts === 'avg' ? [['A', 0]] : [['T', 0], ['S', 1]];
         kinds.forEach(function (kk) {
@@ -4334,8 +4338,8 @@
             var val = kk[0] === 'A' ? (r.T[q] + r.S[q]) / 2 : r[kk[0]][q];
             return [X(byH ? t.hx[ri] : t.hx[ri] / t.hmax), Y(val)];
           });
-          g.push('<path d="' + pchip(pts) + '" fill="none" stroke="' + c + '" stroke-width="' + (narrow ? 1.5 : 2.1) + '" stroke-linejoin="round" stroke-linecap="round"' +
-            (kk[1] ? ' stroke-dasharray="' + (narrow ? '4 3' : '5 3.5') + '"' : '') + '/>');
+          g.push('<path d="' + pchip(pts) + '" fill="none" stroke="' + c + '" stroke-width="' + (narrow ? 1.1 : 2.1) + '" stroke-linejoin="round" stroke-linecap="round"' +
+            (kk[1] ? ' stroke-dasharray="' + (narrow ? '3.5 2.5' : '5 3.5') + '"' : '') + '/>');
         });
         var lastR = rows[rows.length - 1];
         labels.push({ y: Y(S.ts === 's' ? lastR.S[q] : S.ts === 'avg' ? (lastR.T[q] + lastR.S[q]) / 2 : lastR.T[q]),

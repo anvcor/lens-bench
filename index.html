@@ -418,10 +418,22 @@ table.data tbody tr:hover{background:var(--panel-2)}
   .cmpbody{padding:8px 0 48px}
 }
 
+/* ---------- 手机：图表锐化 ----------
+   线图套 3×3 锐化卷积（body 开头的 #fxSharp），只锐化透明度：线和轮廓的边更利，颜色不变。作者按 3 倍屏逐像素对比后选的这版。
+   代价：斜线边缘成细台阶、沿线亮度有起伏（合成斜线每行亮度起伏 3 倍屏 2~11%、2 倍屏 5~22%，不锐化 < 3.4%）；
+   不选「颜色一起锐化」，因为浅色曲线会发白、和图例对不上，镜片轮廓贴着玻璃填充一侧出黑边。
+   Spot 是光斑能量分布图，锐化等于改数据观感，不套。电脑上不套 */
+@media(max-width:760px){
+  #layout, #mtf, #aber, #fan, #cmpMtf{filter:url(#fxSharp)}
+}
+
 @media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
 </style>
 
 </head><body>
+<!-- 手机端线图的锐化滤镜（head.html「手机：图表锐化」引用）：只锐化透明度（线的轮廓），颜色照原样——
+     连颜色一起锐化会让浅色曲线发白、轮廓贴着玻璃填充的一侧出黑边。3×3 卷积强度 0.5（中心 3、上下左右 −0.5） -->
+<svg width="0" height="0" style="position:absolute" aria-hidden="true" focusable="false"><filter id="fxSharp" color-interpolation-filters="sRGB"><feConvolveMatrix in="SourceAlpha" order="3" kernelMatrix="0 -0.5 0 -0.5 3 -0.5 0 -0.5 0" result="a"/><feComponentTransfer in="SourceGraphic" result="c"><feFuncA type="linear" slope="0" intercept="1"/></feComponentTransfer><feComposite in="c" in2="a" operator="in"/></filter></svg>
 <div class="app">
 
   <div class="top">
