@@ -399,7 +399,12 @@ table.data tbody tr:hover{background:var(--panel-2)}
    （上下边框留着当分隔线、背景色区分卡片），内边距收到 6~10 px。图表按父元素宽度画，自然跟着变宽。电脑 / 平板不变 */
 @media(max-width:760px){
   .app{padding:8px 0 0;gap:8px}
-  .top{padding:0 10px}
+  /* 顶栏一行：标题 + 三个按钮。副标题（LDM 表格直接编辑 · …）在 402 宽的手机上折两行、最后一行只剩一个字，
+     按钮再被挤到第三行，顶栏占 106 px；手机上不显示副标题，标题过长时省略号截断，按钮不缩 */
+  .top{padding:0 10px;flex-wrap:nowrap;align-items:center;gap:8px}
+  .top .sub{display:none}
+  .top .brand{font-size:17px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
+  .top .iconbtn{flex:none}
   .work,.leftcol,.viewcol,.cmpbody{gap:8px}
   .sysbar,.card{border-left:0;border-right:0;border-radius:0;box-shadow:none}
   .sysbar{padding:8px 10px}
