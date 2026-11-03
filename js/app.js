@@ -786,7 +786,9 @@
     var P = function (z, y) { return X(z).toFixed(3) + ' ' + Y(y).toFixed(3); };
     /* 线宽、虚线、标注都按「屏幕上的像素」定：data-sw / data-da / data-tx 记下倍率 1 时的值，
        Layout 放大时 layApply 按倍率反除（见 layMarks），放大只让几何变大，线条和字不跟着变粗变大。 */
-    /* 手机（窄于 480）线宽整体 × 0.75：镜片轮廓 1.15 → 0.86、光线 1.05 → 0.79，图缩到三百来像素宽时原来的线显得粗 */
+    /* 手机（窄于 480）线宽整体 × 0.75：镜片轮廓 1.15 → 0.86、光线 1.05 → 0.79，图缩到三百来像素宽时原来的线显得粗。
+       电脑保持原线宽：试过也 × 0.75，1.5 倍屏上 0.79 px 的光线只占 1.2 个物理像素，斜线沿线亮度起伏 ~15%（原来 1.05 是 ~6.5%），
+       作者看着有锯齿；原线宽本来就比 MTF 的 1.5 细。手机 3 倍屏上 0.79 px = 2.4 个物理像素，不出这个问题 */
     var lwK = avail < 480 ? 0.75 : 1;
     var sw = function (w) { w = +(w * lwK).toFixed(3); return ' stroke-width="' + w + '" data-sw="' + w + '"'; };
     var dash = function (da) { return da ? ' stroke-dasharray="' + da + '" data-da="' + da + '"' : ''; };
@@ -800,7 +802,8 @@
     g.push('<line x1="' + xoff.toFixed(3) + '" y1="' + Y(0) + '" x2="' + (PX - xoff).toFixed(3) + '" y2="' + Y(0) +
       '" stroke="' + ink3 + '"' + sw(1) + dash('7 4') + ' opacity=".5"/>');
 
-    g.push('<g stroke="' + gstroke + '"' + sw(1.15) + ' stroke-linejoin="round">');
+    // class="lglass"：手机上只给镜片这一组套锐化（head.html「图表锐化」），光线 / 轨迹这种细斜线锐化后出锯齿，不套
+    g.push('<g class="lglass" stroke="' + gstroke + '"' + sw(1.15) + ' stroke-linejoin="round">');
     L.elements.forEach(function (e) {
       var d = 'M' + e.front.map(function (p) { return P(p[0], p[1]); }).join(' L') +
         ' L' + e.back.slice().reverse().map(function (p) { return P(p[0], p[1]); }).join(' L') + ' Z';
@@ -1326,7 +1329,7 @@
     var axisY = [0, 1, 2].map(function (i) { return top + (maxY + i * 2 * maxY * (1 + gapR)) * scale; });
     var X = function (d) { return xImg - d * scale; };
     var g = [];
-    var lwK = narrow ? 0.75 : 1;    // 手机线宽整体 × 0.75，同 drawLayout
+    var lwK = narrow ? 0.75 : 1;    // 手机线宽 × 0.75，电脑保持原线宽（细了 1.5 倍屏上出锯齿），同 drawLayout
     var sw = function (w) { w = +(w * lwK).toFixed(3); return ' stroke-width="' + w + '" data-sw="' + w + '"'; };
     var dash = function (da) { return da ? ' stroke-dasharray="' + da + '" data-da="' + da + '"' : ''; };
     var label = function (ax, ay, dx, dy, anchor, text, col, size, weight) {
@@ -1408,7 +1411,7 @@
       var P = function (p) { return X(zI - p[0]).toFixed(3) + ' ' + Y(p[1]).toFixed(3); };
       g.push('<line x1="' + (X(maxL) - 8).toFixed(3) + '" y1="' + ay.toFixed(3) + '" x2="' + (xImg + 10).toFixed(3) + '" y2="' + ay.toFixed(3) +
         '" stroke="' + ink3 + '"' + sw(1) + dash('7 4') + ' opacity=".5"/>');
-      g.push('<g stroke="' + gstroke + '"' + sw(1.15) + ' stroke-linejoin="round">');
+      g.push('<g class="lglass" stroke="' + gstroke + '"' + sw(1.15) + ' stroke-linejoin="round">');   // 手机上只锐化镜片，同 drawLayout
       L.elements.forEach(function (e) {
         var d = 'M' + e.front.map(P).join(' L') + ' L' + e.back.slice().reverse().map(P).join(' L') + ' Z';
         g.push('<path d="' + d + '" fill="' + (e.cemented ? glass2 : glass) + '" fill-opacity=".92"/>');
@@ -1549,9 +1552,9 @@
       var c = cols[k % 4];
       ['T', 'S'].forEach(function (kind) {
         var pts = rows.map(function (r) { return [X(xOf(r)), Y(r[kind][k])]; });
-        // 手机上图按 1:1 画，2 px 的曲线在小图上显得粗，窄屏细一点（1.4 → 1.0）、虚线节距跟着缩
-        g.push('<path d="' + pchip(pts) + '" fill="none" stroke="' + c + '" stroke-width="' + (narrow ? 1 : 2) + '" stroke-linejoin="round" stroke-linecap="round"' +
-          (kind === 'S' ? ' stroke-dasharray="' + (narrow ? '3.5 2.5' : '5 3.5') + '"' : '') + '/>');
+        // 曲线线宽：电脑 2 → 1.5（作者要细一点），手机 1.4 → 1.0；虚线节距跟着缩
+        g.push('<path d="' + pchip(pts) + '" fill="none" stroke="' + c + '" stroke-width="' + (narrow ? 1 : 1.5) + '" stroke-linejoin="round" stroke-linecap="round"' +
+          (kind === 'S' ? ' stroke-dasharray="' + (narrow ? '3.5 2.5' : '4.5 3') + '"' : '') + '/>');
       });
       labels.push({ y: Y(rows[rows.length - 1].T[k]), text: nu + '', c: c });
     });
@@ -1623,6 +1626,9 @@
     if (!last || !last.aber) return;
     var A = last.aber, svg = $('aber');
     var W = paneW('aber', 560);
+    /* 曲线线宽：按 1:1 画时（电脑）1.6 → 1.2，和 MTF 的 2 → 1.5 同比例（作者要电脑端各图线宽向 MTF 看齐）；
+       卡片窄于 560（手机）时整张按 560 画再缩小，屏上本来就只有 1 px 上下，作者喜欢那个样子，保持 1.6 */
+    var oneToOne = (($('aber').parentNode || {}).clientWidth || 0) >= 560, aw = oneToOne ? 1.2 : 1.6;
     var H = Math.round(Math.max(300, Math.min(430, W * 0.42)));
     var ink2 = css('--ink-2'), ink3 = css('--ink-3'), lineC = css('--line-2'), lineD = css('--line');
     var cols = last.st.wl.map(function (x) { return x.c; });
@@ -1680,8 +1686,8 @@
     function line(pts, F, color, dash) {
       if (!pts || pts.length < 2) return;
       var d = pts.map(function (q, i) { return (i ? 'L' : 'M') + F.X(q[0]).toFixed(2) + ' ' + F.Y(q[1]).toFixed(2); }).join(' ');
-      g.push('<path d="' + d + '" fill="none" stroke="' + color + '" stroke-width="1.6" stroke-linejoin="round"' +
-        (dash ? ' stroke-dasharray="4 2.8"' : '') + '/>');
+      g.push('<path d="' + d + '" fill="none" stroke="' + color + '" stroke-width="' + aw + '" stroke-linejoin="round"' +
+        (dash ? ' stroke-dasharray="' + (oneToOne ? '3.5 2.4' : '4 2.8') + '"' : '') + '/>');
     }
 
     var x1 = 8 + GL, x2 = x1 + pw + GR + gap + GL, x3 = x2 + pw + GR + gap + GL;
@@ -1722,6 +1728,8 @@
     var F = last.fan, svg = $('fan'), rows = F.rows;
     if (!rows.length) { svg.innerHTML = ''; return; }
     var W = paneW('fan', 700);
+    // 曲线线宽：1:1（电脑）1.35 → 1.0，同 MTF 的比例；窄于 700（手机）整张缩小显示，保持 1.35
+    var fw = (($('fan').parentNode || {}).clientWidth || 0) >= 700 ? 1 : 1.35;
     var ink2 = css('--ink-2'), ink3 = css('--ink-3'), lineD = css('--line'), panel = css('--panel');
     var cols = last.st.wl.map(function (x) { return x.c; });
     var useH = last.st.fmode === 'height';
@@ -1786,7 +1794,7 @@
             open = true; n++;
           });
           if (n > 1) g.push('<path d="' + d.trim() + '" fill="none" stroke="' + (cols[wi] || ink2) +
-            '" stroke-width="1.35" stroke-linejoin="round"/>');
+            '" stroke-width="' + fw + '" stroke-linejoin="round"/>');
         });
       });
     });
@@ -4338,8 +4346,8 @@
             var val = kk[0] === 'A' ? (r.T[q] + r.S[q]) / 2 : r[kk[0]][q];
             return [X(byH ? t.hx[ri] : t.hx[ri] / t.hmax), Y(val)];
           });
-          g.push('<path d="' + pchip(pts) + '" fill="none" stroke="' + c + '" stroke-width="' + (narrow ? 1.1 : 2.1) + '" stroke-linejoin="round" stroke-linecap="round"' +
-            (kk[1] ? ' stroke-dasharray="' + (narrow ? '3.5 2.5' : '5 3.5') + '"' : '') + '/>');
+          g.push('<path d="' + pchip(pts) + '" fill="none" stroke="' + c + '" stroke-width="' + (narrow ? 1.1 : 1.5) + '" stroke-linejoin="round" stroke-linecap="round"' +
+            (kk[1] ? ' stroke-dasharray="' + (narrow ? '3.5 2.5' : '4.5 3') + '"' : '') + '/>');
         });
         var lastR = rows[rows.length - 1];
         labels.push({ y: Y(S.ts === 's' ? lastR.S[q] : S.ts === 'avg' ? (lastR.T[q] + lastR.S[q]) / 2 : lastR.T[q]),
