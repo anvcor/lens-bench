@@ -17,7 +17,6 @@
   --glass:#DBEAEE; --glass-2:#CADEE4; --glass-stroke:#78A0AB;
   --f1:#45B0BC; --f2:#0F7285; --f3:#073846; --f4:#5D6E22;
   --v1:#D69426; --v2:#A8471A; --v3:#5E1E11;
-  --s1:#2a78d6; --s2:#eb6834; --s3:#1baf7a; --s4:#eda100; --s5:#e87ba4;   /* 对焦全程对比的 5 个系列色（固定顺序，深浅两套都验过色觉区分度） */
   --warn:#7E5310; --warn-bg:#FAF1DC; --warn-line:#E4CE9C;
   --shadow:0 1px 2px rgba(17,26,32,.05), 0 8px 24px -14px rgba(17,26,32,.22);
   --r:9px;
@@ -32,7 +31,6 @@
     --glass:#1D3038; --glass-2:#24404A; --glass-stroke:#4F7D89;
     --f1:#1B7285; --f2:#3FAFC2; --f3:#9EE9F1; --f4:#B6D98A;
     --v1:#B06A2E; --v2:#E08A3C; --v3:#F7C271;
-    --s1:#3987e5; --s2:#d95926; --s3:#199e70; --s4:#c98500; --s5:#d55181;
     --warn:#E2B36A; --warn-bg:#241E12; --warn-line:#40361F;
     --shadow:0 1px 2px rgba(0,0,0,.4), 0 8px 24px -14px rgba(0,0,0,.7);
     color-scheme:dark;
@@ -46,7 +44,6 @@
   --glass:#1D3038; --glass-2:#24404A; --glass-stroke:#4F7D89;
   --f1:#1B7285; --f2:#3FAFC2; --f3:#9EE9F1; --f4:#B6D98A;
   --v1:#B06A2E; --v2:#E08A3C; --v3:#F7C271;
-  --s1:#3987e5; --s2:#d95926; --s3:#199e70; --s4:#c98500; --s5:#d55181;
   --warn:#E2B36A; --warn-bg:#241E12; --warn-line:#40361F;
   --shadow:0 1px 2px rgba(0,0,0,.4), 0 8px 24px -14px rgba(0,0,0,.7);
   color-scheme:dark;
@@ -71,7 +68,7 @@ body{
   border-radius:6px;padding:4px 10px;font:inherit;font-size:12px;cursor:pointer}
 .iconbtn:hover{border-color:var(--accent);color:var(--accent)}
 .iconbtn:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
-/* 顶栏的主入口（对比镜头）：强调色浅底 + 强调色边框文字，悬停填满；亮暗主题都走 --accent 这组变量 */
+/* 顶栏的主入口（对比两颗）：强调色浅底 + 强调色边框文字，悬停填满；亮暗主题都走 --accent 这组变量 */
 .iconbtn.cta{background:var(--accent-soft);border-color:var(--accent);color:var(--accent);font-weight:600}
 .iconbtn.cta:hover{background:var(--accent);border-color:var(--accent);color:var(--panel)}
 
@@ -167,43 +164,6 @@ table.lde td.zoo{box-shadow:inset 2px 0 0 var(--accent)}
   font-family:"IBM Plex Mono",ui-monospace,monospace;font-size:11px;color:var(--ink-2)}
 .cmpstat b{color:var(--ink-3);font-weight:500;margin-right:5px}
 .cmpstat i{font-style:normal;color:var(--ink)}
-/* ---- 对比镜头：两个标签页 + 对焦全程（MTF 30 lp/mm vs 放大倍率）---- */
-.cmpbody[hidden]{display:none}
-.nocase{text-transform:none}   /* 卡片标题整体大写，单位（lp/mm）不能跟着变成 LP/MM */   /* .cmpbody 是 flex，不写这条 hidden 属性会被盖掉，两个标签页叠在一起 */
-.tabs{display:inline-flex;gap:2px;padding:2px;border:1px solid var(--line);border-radius:7px;background:var(--panel-2);flex:0 0 auto}
-.tab{height:24px;padding:0 10px;border:0;border-radius:5px;background:transparent;color:var(--ink-2);font:inherit;font-size:12px;cursor:pointer;white-space:nowrap}
-.tab:hover{color:var(--ink)}
-.tab.on{background:var(--panel);color:var(--accent);box-shadow:0 0 0 1px var(--line)}
-.tab:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
-.fcbar{align-items:flex-end}
-.fcbar #fcLens{width:260px}
-.fcnote{font-size:11px;color:var(--ink-3);align-self:center;margin-left:4px}
-.fcchips{display:flex;flex-wrap:wrap;gap:6px;min-height:28px}
-.fcchips:empty::before{content:'还没有选镜头：上面选一颗，点「添加」';font-size:12px;color:var(--ink-3);align-self:center}
-.fcchip{display:inline-flex;align-items:center;gap:7px;height:28px;padding:0 4px 0 10px;border:1px solid var(--line);
-  border-radius:14px;background:var(--panel);font-size:12px;color:var(--ink);max-width:100%}
-.fcchip .sw{flex:0 0 auto;width:16px;height:3px;border-radius:2px}
-.fcchip span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.fcchip button{flex:0 0 auto;border:0;background:transparent;color:var(--ink-3);cursor:pointer;font-size:15px;line-height:1;
-  width:22px;height:22px;border-radius:11px}
-.fcchip button:hover{color:var(--ink);background:var(--panel-3)}
-.fcbody{position:relative}
-#fcPlot{touch-action:pan-y}
-.fctip{position:absolute;z-index:3;pointer-events:none;min-width:170px;max-width:260px;padding:7px 9px;border:1px solid var(--line);
-  border-radius:7px;background:var(--panel);box-shadow:var(--shadow);font-size:11.5px;line-height:1.55;color:var(--ink-2)}
-.fctip b{display:flex;align-items:center;gap:6px;color:var(--ink);font-weight:600;margin-bottom:2px}
-.fctip b .sw{width:12px;height:3px;border-radius:2px}
-.fctip i{font-style:normal;font-family:"IBM Plex Mono",ui-monospace,monospace;color:var(--ink)}
-.fcdetail:empty{display:none}
-.fcdetail{padding:8px 12px 10px;border-top:1px solid var(--line-2);overflow-x:auto}
-.fcdetail .cap{display:flex;align-items:center;gap:7px;font-size:12px;color:var(--ink-2);margin-bottom:6px;flex-wrap:wrap}
-.fcdetail .cap .sw{width:14px;height:3px;border-radius:2px}
-.fcdetail .cap b{color:var(--ink);font-weight:600}
-.fcdetail table{border-collapse:collapse;font-family:"IBM Plex Mono",ui-monospace,monospace;font-size:11px}
-.fcdetail th,.fcdetail td{padding:2px 7px;text-align:right;white-space:nowrap}
-.fcdetail th{color:var(--ink-3);font-weight:500}
-.fcdetail td{color:var(--ink)}
-.fcdetail tr+tr td,.fcdetail tr+tr th{border-top:1px solid var(--line-2)}
 /* 关于页 */
 .about .ab-hero{padding:28px 0 26px}
 .ab-total{display:flex;align-items:baseline;gap:10px}
@@ -221,7 +181,7 @@ table.lde td.zoo{box-shadow:inset 2px 0 0 var(--accent)}
 .ab-bar{display:flex;height:10px;gap:1px;min-width:4px;justify-self:start}
 .ab-bar i{display:block;height:100%;background:var(--ink-3);border-radius:1px}
 .ab-bc{font-family:"IBM Plex Mono",ui-monospace,monospace;font-variant-numeric:tabular-nums;font-weight:500;color:var(--ink);text-align:right}
-/* 友情链接：卡片，名字用强调色浅底 + 左侧色条，和顶栏「对比镜头」同一组变量 */
+/* 友情链接：卡片，名字用强调色浅底 + 左侧色条，和顶栏「对比两颗」同一组变量 */
 .about .ab-links{padding-top:22px}
 .about .ab-links h3{font-size:16px;margin-bottom:14px}
 .ab-linklist{list-style:none;margin:0;padding:0;display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:12px}
@@ -461,12 +421,6 @@ table.data tbody tr:hover{background:var(--panel-2)}
   .helpwrap{padding:10px}
   .statuswrap{padding:0 14px 10px}        /* 底部栏保持原来的样子（圆角、边框、离屏幕边一点），页面不留边了，所以这里自己补上左右 14 */
   .cmpbody{padding:8px 0 48px}
-  .sheetbar{flex-wrap:wrap;row-gap:7px}
-  .sheetbar .tabs{order:5;width:100%}
-  .sheetbar .tab{flex:1 1 0}
-  .fcbar #fcLens,.fcbar #fcBrand{width:100%}
-  .fcbar .fld{flex:1 1 140px}
-  .fcchips{padding:0 10px}
 }
 
 /* ---------- 图表锐化 ----------
@@ -494,7 +448,7 @@ table.data tbody tr:hover{background:var(--panel-2)}
     <h1 class="brand">镜头 MTF 仿真台</h1>
     <span class="sub">LDM 表格直接编辑 · Layout 与 MTF 实时重算 · 全部计算在本机浏览器完成</span>
     <span class="spacer"></span>
-    <button class="iconbtn cta" id="cmpBtn" type="button">对比镜头</button>
+    <button class="iconbtn cta" id="cmpBtn" type="button">对比两颗</button>
     <button class="iconbtn" id="aboutBtn" type="button">关于</button>
     <button class="iconbtn" id="themeBtn" type="button" aria-label="切换亮暗主题">◐ 主题</button>
   </div>
@@ -714,19 +668,14 @@ table.data tbody tr:hover{background:var(--panel-2)}
 
 
 
-  <!-- ============ 对比镜头（二级页）：MTF vs 视场（A/B 两颗）｜ MTF 30 lp/mm vs 放大倍率（≤5 颗） ============ -->
+  <!-- ============ 双镜头对比（二级页） ============ -->
   <div class="sheet" id="cmpSheet" hidden>
     <div class="sheetbar">
       <button class="iconbtn" id="cmpBack" type="button">← 返回</button>
-      <h2>对比镜头</h2>
-      <div class="tabs" role="tablist" aria-label="对比方式">
-        <button class="tab on" type="button" role="tab" data-cmptab="mtf" aria-selected="true">MTF vs 视场</button>
-        <button class="tab" type="button" role="tab" data-cmptab="fc" aria-selected="false">MTF 30 lp/mm vs 放大倍率</button>
-      </div>
-      <span class="grow"></span>
-      <span class="sheetnote" id="cmpNote">两边共用同一套光谱 / 频率 / 算法，只有镜头不同</span>
+      <h2>双镜头对比 · MTF vs 视场</h2><span class="grow"></span>
+      <span class="sheetnote">两边共用同一套光谱 / 频率 / 算法，只有镜头不同</span>
     </div>
-    <div class="cmpbody" id="cmpTabMtf">
+    <div class="cmpbody">
 
       <div class="sysbar cmpbar">
         <label class="fld"><span>光谱</span>
@@ -824,35 +773,6 @@ table.data tbody tr:hover{background:var(--panel-2)}
       </section>
 
     </div>
-
-    <!-- 对焦全程：曲线是本机预先算好的（focus/<id>.json），这里只画图，不现算 -->
-    <div class="cmpbody" id="cmpTabFc" hidden>
-      <div class="sysbar cmpbar fcbar">
-        <label class="fld"><span>品牌</span><select id="fcBrand" class="w-l" aria-label="品牌"></select></label>
-        <label class="fld"><span>镜头</span><select id="fcLens" class="w-xl" aria-label="镜头"></select></label>
-        <div class="fld"><span>&nbsp;</span><button class="btn" id="fcAdd" type="button">＋ 添加</button></div>
-        <span class="fcnote" id="fcAvail"></span>
-      </div>
-      <div class="fcchips" id="fcChips" aria-label="已选镜头"></div>
-      <section class="card">
-        <header><h2>MTF 30 <span class="nocase">lp/mm</span> 全画幅平均 vs 放大倍率</h2><span class="grow"></span><button class="hbtn" id="fcCsv" type="button" title="把选中镜头的全部状态导出成 CSV（放大倍率、物距、工作 F、对焦群位移、画幅平均、逐视场 T/S）">导出 CSV</button><button class="hbtn" type="button" data-copy="fcPlot" title="把图连同图例渲染成 PNG 复制到剪贴板；剪贴板不可用时改为下载">复制图片</button><span class="badge" id="fcBadge">—</span><button class="helpbtn" type="button" data-help="fcHelp" aria-controls="fcHelp" aria-expanded="false" aria-label="使用说明">?</button></header>
-        <div class="body fcbody">
-          <svg id="fcPlot" class="plot" role="img" aria-label="对焦全程：MTF 30 lp/mm 全画幅平均随放大倍率的变化"></svg>
-          <div class="fctip" id="fcTip" hidden></div>
-          <div class="legend" id="fcLegend"></div>
-        </div>
-        <div class="fcdetail" id="fcDetail"></div>
-        <div class="helpwrap" id="fcHelp" hidden>
-          <p class="note"><b>一个数代表一个对焦状态</b>：画幅上每个像素等权平均的 (子午 + 弧矢)/2（全画幅 36×24，其他画幅按镜头自己的像高取 3:2；移轴镜头按相机画幅、不移轴），频率 30 lp/mm，多色衍射 MTF，
-          光谱统一可见光 5 线（10/27/29/23/11，主波长 546.1 nm）。从无限远一直算到最近对焦；横轴是近轴放大倍率（对数轴），∞ 单独画在最左边，用虚线接到第一个有限距离的点。</p>
-          <p class="note"><b>怎么算的</b>：每个倍率都按对焦群的凸轮把镜组放到位，再把主对焦群挪到轴上 MTF 30 lp/mm 最高的位置（文件自带的近摄组态焦点常常不在峰上，所以每一点都重新对焦）；
-          光阑按实物的口径固定，所以近摄时工作 F 值会变大（浮动对焦的镜头也可能变小）；但文件 / 专利自己给的近摄工作 F 比这样算出来的大 10% 以上的镜头（多是微距，专利按缩小了的有效光圈评价近摄，库里的光阑位置又对不上），改用文件各组态的工作 F、中间按倍率插值，图例里标「近摄光圈按文件」；渐晕每个状态按镜片通光重算。曲线是本机预先算好的，网页只负责画：用 CODE V 算，CODE V 目录写不出来的玻璃（偏移过的牌号、只给了 nd/νd 的、CODE V 没收录的）写成私有玻璃；个别 CODE V 追不通光线的镜头用本站内核算——同一颗镜头本站内核一般比 CODE V 低 0.01~0.03，主要差在边缘视场（光瞳取样方式不同），曲线形状和排名一致。每颗用哪个算的，鼠标移到点上能看到。</p>
-          <p class="note"><b>要留意的地方</b>：单群对焦的镜头每一点都是精确解；多群浮动对焦的镜头，中间状态的副群位置是按文件各组态插出来的，只有文件组态本身是厂商 / 专利数据，
-          节点只有 2~3 个的镜头中间段没有独立验证——相邻两个文件组态倍率差 1.8 倍以上、中间又比两端都低（或都高）一截的区间画成长虚线——这种起伏只靠插值撑着，仅供参考（导出的 CSV 里 cam_interpolated = 1）。没有无限远组态的显微微距（只能接皮腔用）只画文件给的倍率范围。专利里写死的通光在近摄时可能挡光，曲线会如实反映。最多同时比 5 颗。
-          鼠标移到点上看物距、工作 F 和平均值；点一下在下面列出这一状态的逐视场 T / S。</p>
-        </div>
-      </section>
-    </div>
   </div>
 
   <!-- ============ 关于（二级页） ============ -->
@@ -913,7 +833,6 @@ table.data tbody tr:hover{background:var(--panel-2)}
 <script id="src-glassdb" src="js/glassdb.js"></script>
 <script src="js/lensio.js"></script>
 <script id="src-optics" src="js/optics.js"></script>
-<script src="js/lensexport.js"></script>
 <script id="src-spot-gpu-display" src="js/spot-gpu-display.js"></script>
 <script id="src-spot-display-shader" src="js/spot-display-shader.js"></script>
 <script id="src-spot-cache" src="js/spot-cache.js"></script>
