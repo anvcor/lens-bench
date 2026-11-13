@@ -4334,25 +4334,27 @@
     if (!narrow) g.push('<text transform="translate(' + (P.l - 38) + ',' + (P.t + ih / 2) + ') rotate(-90)" fill="' + ink2 + '" font-size="11" text-anchor="middle">MTF 30 lp/mm 全画幅平均</text>');
 
     // 曲线
-    var pts = [], ends = [], anyIv = false;
+    var pts = [], ends = [], anyIv = false, exNote = [];
     S.forEach(function (q) {
       var c = q.col;
       if (q.inf && q.fin.length)
         g.push('<line x1="' + xInf.toFixed(1) + '" y1="' + Y(q.inf.m).toFixed(1) + '" x2="' + LX(q.fin[0].b).toFixed(1) + '" y2="' + Y(q.fin[0].m).toFixed(1) +
           '" stroke="' + c + '" stroke-width="1.4" stroke-dasharray="2 3" opacity=".85"/>');
       // 插值区间（多群浮动对焦、相邻两个文件组态隔得远，中间副群位置是插值的）画虚线；其余实线
-      var iv = q.d.iv || [], segs = [], cur = null;
+      // 外推段（文件最后一个组态没到官方最近对焦，往外按假设的浮动量算的，fcextend.py，11-13）：短虚线，和插值的长虚线分开
+      var iv = q.d.iv || [], ex = q.d.ex, segs = [], cur = null;
       var inIv = function (a, b) { return iv.some(function (r) { return a >= r[0] * (1 - 1e-6) && b <= r[1] * (1 + 1e-6); }); };
       for (var k = 1; k < q.fin.length; k++) {
-        var dash = inIv(q.fin[k - 1].b, q.fin[k].b);
+        var dash = ex && q.fin[k - 1].b >= ex[0] * (1 - 1e-6) ? 'ex' : inIv(q.fin[k - 1].b, q.fin[k].b) ? 'iv' : '';
         if (!cur || cur.dash !== dash) { cur = { dash: dash, pts: [q.fin[k - 1]] }; segs.push(cur); }
         cur.pts.push(q.fin[k]);
       }
       segs.forEach(function (sg) {
         g.push('<polyline points="' + sg.pts.map(function (s) { return LX(s.b).toFixed(1) + ',' + Y(s.m).toFixed(1); }).join(' ') +
-          '" fill="none" stroke="' + c + '" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"' + (sg.dash ? ' stroke-dasharray="6 4"' : '') + '/>');
+          '" fill="none" stroke="' + c + '" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"' + (sg.dash === 'iv' ? ' stroke-dasharray="6 4"' : sg.dash === 'ex' ? ' stroke-dasharray="2.5 3.5"' : '') + '/>');
       });
       if (iv.length) anyIv = true;
+      if (ex) exNote.push(esc(fcName(q.id)) + '：' + (q.d.exm || '文件组态以外是外推的'));
       q.fin.forEach(function (s) {
         var x = LX(s.b), y = Y(s.m);
         g.push('<circle cx="' + x.toFixed(1) + '" cy="' + y.toFixed(1) + '" r="2.4" fill="' + c + '"/>');
@@ -4393,7 +4395,8 @@
         '<span style="color:var(--ink-3)">　' + (q.inf ? '∞ ' + q.inf.m.toFixed(3) : q.fin.length ? fcB(q.fin[0].b) + ' ' + q.fin[0].m.toFixed(3) : '—') +
         (e ? ' → ' + fcB(e.b) + ' ' + e.m.toFixed(3) : '') + '</span></span>';
     }).join('') + (S.length ? '<span class="lg conv">大圆点 = 无限远，虚线接到第一个有限距离的点；每条线末端是最近对焦的倍率' +
-      (anyIv ? '；长虚线段 = 两个文件组态隔得远，中间浮动镜组的位置是插值的，仅供参考' : '') + '</span>' : '');
+      (anyIv ? '；长虚线段 = 两个文件组态隔得远，中间浮动镜组的位置是插值的，仅供参考' : '') +
+      (exNote.length ? '；短虚线段 = 外推（' + exNote.join('；') + '），仅供参考' : '') + '</span>' : '');
   }
 
   /* ---- 悬停 / 点选 ---- */
@@ -4419,6 +4422,8 @@
                 ['物像距', s.b > 0 && s.D != null ? fcDist(s.D) : '∞'], ['工作光圈', 'F/' + s.F.toFixed(3)],
                 ['画幅平均', s.m.toFixed(3)], ['按像高平均', s.hm.toFixed(3)], ['计算', (FC.data[p.id] || {}).src || '—'],
                 ['光圈', (FC.data[p.id] || {}).ap === 'file' ? '近摄按文件给的工作 F' : '按实物光阑固定']];
+    var exd = (FC.data[p.id] || {}).ex;
+    if (exd && s.b > exd[0] * (1 + 1e-6)) rows.push(['外推', '文件组态以外，浮动量是假设的']);
     tip.innerHTML = '<b><span class="sw" style="background:' + p.col + '"></span>' + esc(fcName(p.id)) + '</b>' +
       rows.map(function (r) { return r[0] + ' <i>' + esc(r[1]) + '</i>'; }).join('<br>');
     tip.hidden = false;
@@ -4456,13 +4461,14 @@
   $('fcCsv').addEventListener('click', function () {
     var ids = FC.ids.filter(function (id) { return FC.data[id]; });
     if (!ids.length) { flashBtn(this, '还没有数据'); return; }
-    var h = FC.data[ids[0]].h, out = ['lens,source,beta,obj_to_S1_mm,obj_to_image_mm,working_F,efl,focus_travel_mm,frame_mean_MTF_30lpmm,height_mean_MTF_30lpmm,cam_interpolated,' +
+    var h = FC.data[ids[0]].h, out = ['lens,source,beta,obj_to_S1_mm,obj_to_image_mm,working_F,efl,focus_travel_mm,frame_mean_MTF_30lpmm,height_mean_MTF_30lpmm,cam_interpolated,extrapolated,' +
       h.map(function (v) { return 'T@' + v; }).join(',') + ',' + h.map(function (v) { return 'S@' + v; }).join(',')];
     ids.forEach(function (id) {
       var d = FC.data[id], q = function (s) { return '"' + String(s).replace(/"/g, '""') + '"'; };
       d.st.forEach(function (s) {
         var ci = (d.iv || []).some(function (r) { return s.b > r[0] * (1 + 1e-6) && s.b < r[1] * (1 - 1e-6); }) ? 1 : 0;   // 插值区间内部的点
-        out.push([q(fcName(id)), q(d.src), s.b, s.b > 0 ? s.obj : 'inf', s.b > 0 && s.D != null ? s.D : 'inf', s.F, s.efl, s.s, s.m, s.hm, ci]
+        var xe = d.ex && s.b > d.ex[0] * (1 + 1e-6) ? 1 : 0;                                                            // 外推的点
+        out.push([q(fcName(id)), q(d.src), s.b, s.b > 0 ? s.obj : 'inf', s.b > 0 && s.D != null ? s.D : 'inf', s.F, s.efl, s.s, s.m, s.hm, ci, xe]
           .concat(s.T, s.S).join(','));
       });
     });
