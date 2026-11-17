@@ -520,8 +520,149 @@
     HIST.undo.push(HIST.last); HIST.redo.length = 0; histApply(HIST.base);
   }
 
+  /* ================= MTF 多线程：按视场分给 Worker（11-17，作者要求）=================
+     「MTF vs 视场」每个视场的追迹 + OTF 互不相干。主线程把系统打包（OPT.sysPack：折射率按本次的波长先算成表），
+     一个视场一条消息排进队列，Worker 池里谁空了谁领下一条；Worker 里 OPT.sysUnpack 还原后只算这一个视场的 OPT.mtfVsField，
+     回来按视场下标放回原位。和单线程逐个视场算的是同一段代码、同一组输入，结果逐位相同（瞄准、折射率的缓存只影响快慢）——
+     tools/mtfsplit.js 拿全库逐位比过。
+     · 线程数 = CPU 逻辑线程数 − 1，最多 15（同 Spot）；按这批的视场数按需建，建好的一直留着复用；
+     · Worker 源码同 Spot：glassdb + optics（单文件版取内联 <script>，静态站 fetch js/），再加 mtfSubMain；
+     · 主页面（槽 'main'）和对比页（槽 'cmp'）各占一个槽：同一个槽再来一批，上一批还没派出去的视场直接撤掉，
+       已经在算的算完丢掉——只认最新一批，旧结果不会盖到新结果上；
+     · 外圈视场先派：离轴越远追迹越贵（瞄准、渐晕），慢的先出去，最后不会剩一个慢视场单独拖着；
+     · 走主线程照旧单线程算的情况：Worker 源码还没取到（页面刚打开的第一次计算）、浏览器没有 Worker、
+       CPU 只有 1~2 个线程、这批总共只有 1 个视场；Worker 报错时那一批整批在主线程重算（不拼半份），
+       Worker 本身起不来就整个关掉多线程。 */
+  var MTF_THREADS = Math.max(1, Math.min(15, (navigator.hardwareConcurrency || 4) - 1));
+  var MTFW = { st: 'idle', url: null, ws: [], q: [], live: {}, seq: 0, noted: {} };
+  /* Worker 里跑的：收一个视场，回一行 */
+  function mtfSubMain() {
+    self.onmessage = function (e) {
+      var m = e.data;
+      try {
+        var r = OPT.mtfVsField(OPT.sysUnpack(m.sys), Object.assign({}, m.opt, { fieldsMTF: [m.th] }));
+        self.postMessage({ b: m.b, j: m.j, i: m.i, row: r.rows[0], rays: r.rays });
+      } catch (err) { self.postMessage({ b: m.b, j: m.j, i: m.i, error: String((err && err.message) || err) }); }
+    };
+  }
+  function mtfNote(why) {
+    if (MTFW.noted[why]) return;
+    MTFW.noted[why] = 1;
+    if (window.console) console.warn('MTF 多线程：' + why);
+  }
+  function mtfWarm() {
+    if (MTFW.st !== 'idle') return;
+    if (MTF_THREADS < 2 || typeof Worker === 'undefined' || typeof Blob === 'undefined' || !window.URL || !URL.createObjectURL) { MTFW.st = 'off'; return; }
+    MTFW.st = 'loading';
+    Promise.all([srcText('glassdb'), srcText('optics')]).then(function (t) {
+      if (MTFW.st !== 'loading') return;
+      // Blob URL 一直留着（不 revoke）：后面按需加 Worker 还要用；有的浏览器在 new Worker 之后马上 revoke 会起不来
+      MTFW.url = URL.createObjectURL(new Blob([t[0] + '\n' + t[1] + '\n(' + mtfSubMain.toString() + ')();'], { type: 'text/javascript' }));
+      MTFW.st = 'ready';
+      // 先按当前的视场数备好几个：Worker 解析源码要几十毫秒，提前建好，下一次重算就直接多线程
+      try { mtfGrow(Math.min(MTF_THREADS, Math.max(2, +$('nfield').value || 6))); } catch (err) { mtfOff('建不了 Worker：' + err.message); }
+    }).catch(function (err) { mtfOff('取不到 Worker 源码：' + err.message); });
+  }
+  function mtfGrow(n) {
+    while (MTFW.ws.length < n) {
+      var w = new Worker(MTFW.url);
+      w.k = MTFW.ws.length; w.task = null;
+      w.onmessage = mtfOnMsg;
+      w.onerror = function (ev) { if (ev && ev.preventDefault) ev.preventDefault(); mtfOff('Worker 出错：' + ((ev && ev.message) || '起不来')); };
+      w.onmessageerror = function () { mtfOff('Worker 消息解不开'); };
+      MTFW.ws.push(w);
+    }
+  }
+  /* 整个关掉多线程：Worker 全停，还在算的批次在主线程重算 */
+  function mtfOff(why) {
+    if (MTFW.st === 'off') return;
+    MTFW.st = 'off';
+    MTFW.ws.forEach(function (w) { w.terminate(); });
+    MTFW.ws = []; MTFW.q = [];
+    mtfNote(why + '——多线程关掉，以后都在主线程单线程算');
+    Object.keys(MTFW.live).forEach(function (s) {
+      var b = MTFW.live[s]; delete MTFW.live[s];
+      try { mtfSync(b); } catch (err) { setTimeout(function () { throw err; }); }   // 一批出错不耽误另一批
+    });
+  }
+  function mtfCancel(slot) {
+    var b = MTFW.live[slot];
+    if (!b) return;
+    delete MTFW.live[slot];
+    MTFW.q = MTFW.q.filter(function (t) { return t.b !== b; });
+  }
+  function mtfSync(b) {
+    var t0 = performance.now();
+    var res = b.jobs.map(function (jb) { return OPT.mtfVsField(jb.sys, jb.opt); });
+    b.done(res, { threads: 1, ms: performance.now() - t0 });
+  }
+  /* 算一批：jobs = [{ sys, opt }…]（对比页两颗一起），done(结果数组, { threads, ms })，结果和 OPT.mtfVsField 的返回一模一样。
+     走主线程时 done 当场同步调用；多线程时等最后一个视场回来再调，被同一个槽的新一批顶掉就不调 */
+  function mtfBatch(slot, jobs, done) {
+    mtfCancel(slot);
+    var b = { id: ++MTFW.seq, slot: slot, jobs: jobs, done: done, t0: performance.now(), used: {} }, tasks = [];
+    jobs.forEach(function (jb, j) {
+      jb.fields = OPT.mtfFieldList(jb.opt);
+      jb.rows = new Array(jb.fields.length); jb.rays = 0;
+      jb.fields.forEach(function (th, i) { tasks.push({ b: b, j: j, i: i, th: th }); });
+    });
+    if (MTFW.st === 'idle') mtfWarm();
+    if (MTFW.st !== 'ready' || tasks.length < 2) { mtfSync(b); return; }
+    try { jobs.forEach(function (jb) { jb.pk = OPT.sysPack(jb.sys, jb.opt); }); }
+    catch (err) { mtfNote('系统打包失败（' + err.message + '）——这一批在主线程单线程算'); mtfSync(b); return; }
+    try { mtfGrow(Math.min(MTF_THREADS, tasks.length)); }
+    catch (err) { mtfOff('建不了 Worker：' + err.message); mtfSync(b); return; }
+    b.left = tasks.length;
+    tasks.sort(function (x, y) { return y.i - x.i || x.j - y.j; });
+    MTFW.live[slot] = b;
+    // 主页面的排在前面：对比页那一批（可能几十个视场）不该挡着主页面
+    MTFW.q = slot === 'main' ? tasks.concat(MTFW.q) : MTFW.q.concat(tasks);
+    mtfPump();
+  }
+  function mtfPump() {
+    for (var k = 0; k < MTFW.ws.length && MTFW.q.length; k++) {
+      var w = MTFW.ws[k];
+      if (w.task) continue;
+      var t = MTFW.q.shift(), jb = t.b.jobs[t.j];
+      w.task = t; t.b.used[w.k] = 1;
+      try { w.postMessage({ b: t.b.id, j: t.j, i: t.i, th: t.th, sys: jb.pk, opt: jb.opt }); }
+      catch (err) { w.task = null; mtfFail(t.b, '发不出去（' + err.message + '）'); }
+    }
+  }
+  function mtfOnMsg(e) {
+    var w = this, t = w.task, m = e.data;
+    w.task = null;
+    try {
+      if (t && MTFW.live[t.b.slot] === t.b && m.b === t.b.id && m.j === t.j && m.i === t.i) {
+        if (m.error !== undefined) mtfFail(t.b, m.error);
+        else {
+          var jb = t.b.jobs[t.j];
+          jb.rows[t.i] = m.row; jb.rays += m.rays;
+          if (--t.b.left === 0) mtfDone(t.b);
+        }
+      }
+    } finally { if (MTFW.st === 'ready') mtfPump(); }      // 画图出错也别把队列卡住
+  }
+  function mtfFail(b, why) {
+    if (MTFW.live[b.slot] !== b) return;
+    mtfCancel(b.slot);
+    mtfNote(why + '——这一批改在主线程单线程算');
+    mtfSync(b);
+  }
+  function mtfDone(b) {
+    delete MTFW.live[b.slot];
+    b.done(b.jobs.map(function (jb) {
+      // 同 OPT.mtfVsField 的返回：rows / fields / rays / aiming / mode
+      return { rows: jb.rows, fields: jb.fields, rays: jb.rays, aiming: jb.sys.aiming, mode: jb.opt.mtfMode === 'diff' ? 'diff' : 'geo' };
+    }), { threads: Object.keys(b.used).length, ms: performance.now() - b.t0 });
+  }
+
   /* ================= 主计算 ================= */
-  var last = null;
+  /* last = 最近一次「画出来」的完整结果（含 MTF）；cur = 最近一次 compute 算出的系统（sys / opt / st / surfaces / 光路 / 像差 / 扇面），
+     不含 MTF，compute 的同步部分一算完就换上。MTF 在 Worker 里算的那段时间两者不是同一次：
+     画图、复制图片、表格里的提示读 last（和屏幕上的一致）；会改状态或拿系统去算的操作（最佳对焦、一键渐晕、变焦、挂凸轮、
+     导出、Spot）读 cur——它们都用不到 MTF，读 cur 就和以前单线程时一样，拿到的是最新的系统，不会把旧系统的结果写进新状态（11-17 审查） */
+  var last = null, cur = null;
   function compute() {
     // 半口径数组按行下标对齐。插删面在 insBtn / delBtn 里同步；粘贴会在末尾补行，这里补 null。
     // 长度对不上时光学内核会整份忽略它们（画图、一键渐晕、Spot 就全退回光线包络）。
@@ -531,11 +672,16 @@
       if (a.length > state.rows.length) a.length = state.rows.length;
     });
     histRecord();
+    SCHED = false;
+    mtfCancel('main');                            // 上一次的 MTF 还在多线程里算：作废，结果不再画
     var st = readState();
     var p = OPT.parsePrescription(st.tx);
-    var msgs = LENSMSG.concat(p.warnings).concat(PENDMSG); PENDMSG = [];
+    // 待显示的提示（PENDMSG）等这一次真画出来才清：多线程算 MTF 期间又来一次重算、这次作废的话，提示留给下一次显示
+    var nPend = PENDMSG.length, mseq = MSGS.seq;
+    var msgs = LENSMSG.concat(p.warnings).concat(PENDMSG);
     if (p.surfaces.length < 2) {
-      showMsgs(msgs.concat(['至少需要 2 个面才能构成系统。']));
+      PENDMSG = PENDMSG.slice(nPend);
+      showMsgs(msgs.concat(['至少需要 2 个面才能构成系统。']), true);
       $('surfBadge').textContent = p.surfaces.length + ' 面';
       return;
     }
@@ -597,41 +743,53 @@
     // 只取决于曲率 / 厚度 / 折射率，与孔径、非球面高次项无关，所以能直接判断
     // 「文件里的后焦距对不对」。写死的镜头和正常的 .zmx 都在 1 波以内，超过就提示。
 
+    // 光路图 / 像差 / 光线扇面在主线程算（快）；MTF 按视场分给 Worker（mtfBatch），全部回来后一次性换上 last、整页重画。
+    // 换上之前 last 还是上一次的完整结果，读 last 的地方看到的永远是同一次计算的东西
     var t0 = performance.now();
-    var mtf = OPT.mtfVsField(sys, opt);
     var lay = OPT.layoutGeometry(sys, opt);
     var aber = OPT.aberrations(sys, opt);
     var fan = OPT.rayFan(sys, opt);
-    var dt = performance.now() - t0;
-
-    // 渐晕本身不是问题，边缘通光率在信息卡和数据表里都有，不再刷提示
-    if (mtf.mode === 'diff') {
-      var pvm = 0; mtf.rows.forEach(function (r) { pvm = Math.max(pvm, r.wpv || 0); });
-      if (st.ngrid < 32)
-        msgs.push('衍射模式建议瞳面网格 ≥ 32²：24² 时轴上 MTF@30 会偏高约 0.03（实测 0.746 vs 收敛值 0.711）。');
-      if (pvm > st.ngrid / 3)
-        msgs.push('波前 PV 达 ' + pvm.toFixed(0) + ' λ，超出 ' + st.ngrid + '² 瞳网格的相位取样能力，衍射 MTF 可能失真——请调大瞳面网格或改用几何模式。');
-    }
-    last = { sys: sys, mtf: mtf, lay: lay, aber: aber, fan: fan, opt: opt, st: st, dt: dt, surfaces: p.surfaces };
-    syncSdHints();
-    spotStale();
-    showMsgs(msgs);
-    $('surfBadge').textContent = p.surfaces.length + ' 面 · ' + pieceCount(p.surfaces) + ' 片';
-    renderStatus();
-    renderSpec();
-    renderLayout();
-    renderMTF();
-    renderAber();
-    renderFan();
-    renderDataTable();
-    $('perfBadge').textContent = (mtf.mode === 'diff' ? '衍射 · ' : '几何 · ') + mtf.rays.toLocaleString('en-US') + ' 条' + (mtf.aiming ? '（瞄准）' : '') + ' · ' + dt.toFixed(0) + ' ms';
-    $('stPerf').textContent = '追迹 ' + mtf.rays.toLocaleString('en-US') + ' 条 · ' + dt.toFixed(0) + ' ms · JS 单线程';
-    syncVigBtn();
-    syncZoomUI();
-    writeHash(hashState(st));
+    cur = { sys: sys, opt: opt, st: st, surfaces: p.surfaces, lay: lay, aber: aber, fan: fan };
+    mtfBatch('main', [{ sys: sys, opt: opt }], function (res, info) {
+      var mtf = res[0], dt = performance.now() - t0;
+      PENDMSG = PENDMSG.slice(nPend);
+      // 渐晕本身不是问题，边缘通光率在信息卡和数据表里都有，不再刷提示
+      if (mtf.mode === 'diff') {
+        var pvm = 0; mtf.rows.forEach(function (r) { pvm = Math.max(pvm, r.wpv || 0); });
+        if (st.ngrid < 32)
+          msgs.push('衍射模式建议瞳面网格 ≥ 32²：24² 时轴上 MTF@30 会偏高约 0.03（实测 0.746 vs 收敛值 0.711）。');
+        if (pvm > st.ngrid / 3)
+          msgs.push('波前 PV 达 ' + pvm.toFixed(0) + ' λ，超出 ' + st.ngrid + '² 瞳网格的相位取样能力，衍射 MTF 可能失真——请调大瞳面网格或改用几何模式。');
+      }
+      last = { sys: sys, mtf: mtf, lay: lay, aber: aber, fan: fan, opt: opt, st: st, dt: dt, surfaces: p.surfaces };
+      syncSdHints();
+      spotStale();
+      // MTF 在 Worker 里算的时候别处直接显示过的提示（导出成功、读文件出错…）不能被这次的提示盖掉
+      showMsgs(MSGS.seq !== mseq ? msgs.concat(MSGS.direct) : msgs, true);
+      $('surfBadge').textContent = p.surfaces.length + ' 面 · ' + pieceCount(p.surfaces) + ' 片';
+      renderStatus();
+      renderSpec();
+      renderLayout();
+      renderMTF();
+      renderAber();
+      renderFan();
+      renderDataTable();
+      var thr = info.threads > 1 ? 'JS ×' + info.threads + ' 线程' : 'JS 单线程';
+      $('perfBadge').textContent = (mtf.mode === 'diff' ? '衍射 · ' : '几何 · ') + mtf.rays.toLocaleString('en-US') + ' 条' + (mtf.aiming ? '（瞄准）' : '') + ' · ' + dt.toFixed(0) + ' ms';
+      $('perfBadge').title = 'MTF ' + thr + (info.threads > 1 ? '（按视场分给 Worker）' : '') + '；时间含光路图、像差、扇面';
+      $('stPerf').textContent = '追迹 ' + mtf.rays.toLocaleString('en-US') + ' 条 · ' + dt.toFixed(0) + ' ms · ' + thr;
+      if (SCHED) $('perfBadge').textContent = '计算中…';         // 画的是上一次的，新的一次已经排上了
+      syncVigBtn();
+      syncZoomUI();
+      writeHash(hashState(st));
+    });
+    if (MTFW.live.main) $('perfBadge').textContent = '计算中…';   // 多线程还在算（同步算完的话回调里已经写好了）
   }
 
-  function showMsgs(list) {
+  /* direct = 不经 compute、直接显示的提示（导出、读文件出错…）：记下来，MTF 还在 Worker 里的那次 compute 画完时一并显示 */
+  var MSGS = { seq: 0, direct: [] };
+  function showMsgs(list, fromCompute) {
+    if (!fromCompute) { MSGS.seq++; MSGS.direct = (list || []).slice(); }
     var seenMsg = {};
     list = (list || []).filter(function (t) { if (!t || seenMsg[t]) return false; seenMsg[t] = 1; return true; });
     var el = $('msgs');
@@ -709,9 +867,9 @@
       if (sp.focal || sp.aperture) h.push(specTile('标称焦距 · 光圈', esc([sp.focal ? sp.focal + ' mm' : '', sp.aperture || ''].filter(Boolean).join(' · '))));
       if (sp.year || sp.status) h.push(specTile('发售', esc([sp.year, sp.status].filter(Boolean).join(' · '))));
     }
-    var cp = camNow();
+    var cp = camNow(last);
     if (cp && !cp.why) {
-      var C = cp.C, es = camState(cp), angS = camAngle(cp, es.x);
+      var C = cp.C, es = camState(cp, last), angS = camAngle(cp, es.x);
       h.push('<span class="hd">变焦凸轮 · ' + esc(C.src && C.src.engine || '') + (state.camUser ? ' · 本页拖入' : '') + '</span>');
       var gen = String(C.src && C.src.generated || '').replace(/^\d{4}-(\d\d)-(\d\d)T(\d\d:\d\d).*$/, '$1-$2 $3');
       h.push(specTile('凸轮数据', esc(gen || '—'), (C.src && C.src.tag || '') + ' · ' + (C.src && C.src.name || '') + (C.src && C.src.generated ? ' · 生成于 ' + C.src.generated : '')));
@@ -1171,6 +1329,8 @@
       var k = btn.getAttribute('data-copy'), sp = COPYSPEC[k];
       if (!sp) return;
       if (!sp.ready()) { flashBtn(btn, '还没有图'); return; }
+      // 正在重算（MTF 还在 Worker 里）：屏幕上的图是上一次的，标题却已经是新镜头 / 新结构了，等画完再复制
+      if (sp.main ? (SCHED || MTFW.live.main) : (k !== 'fcPlot' && MTFW.live.cmp)) { flashBtn(btn, '计算中，稍后再复制'); return; }
       var cap = sp.cap ? sp.cap() : sp.title + ' · ' + lensCaption();
       var blobP = snapPng(sp.ids.map(function (id) { return $(id); }), cap, 2);
       var note = function (m) { if (sp.main && !CMP.on) { PENDMSG.push(m); schedule(0); } };   // 提示要靠一次重算才刷出来；对比页上没有提示框
@@ -1206,7 +1366,7 @@
   var LAYMODE = 'normal', LAYRAYS = false;           // LAYRAYS：变焦三态里画不画三视场光路，默认不画
   try { if (localStorage.getItem('lensbench.layzoom') === '1') LAYMODE = 'zoom'; if (localStorage.getItem('lensbench.layrays') === '1') LAYRAYS = true; } catch (e) { }
   function zoomView() {
-    var cp = camNow();
+    var cp = camNow(last);
     if (cp && !cp.why) {
       var C = cp.C, mA = (C.anchors || []).filter(function (a) { return /^M/i.test(a.name); })[0];
       var fM = mA ? mA.f : Math.sqrt(cp.fmin * cp.fmax);
@@ -1217,7 +1377,7 @@
       return { src: 'cam', fW: cp.fmin, fM: fM, fT: cp.fmax, gOf: gOf, keys: cp.keys, groups: groups, fk: cp.fk,
                mName: mA ? 'M 锚点' : '√(fW·fT)' };
     }
-    var zm = zoomModelNow();
+    var zm = zoomModelNow(last);
     if (!zm || zm.why) return null;
     zoomCams(zm);
     var gm = Math.sqrt(zm.fmin * zm.fmax), mq = 0;
@@ -2153,8 +2313,10 @@
 
   /* ================= 事件 ================= */
   var timer = null;
+  var SCHED = false;                              // 排了一次重算、还没开始（防抖期间）
   function schedule(d) {
     clearTimeout(timer);
+    SCHED = true;
     $('perfBadge').textContent = '计算中…';
     timer = setTimeout(function () { requestAnimationFrame(compute); }, d === undefined ? 220 : d);
   }
@@ -2400,12 +2562,12 @@
     return state.imp && IMPREC ? String(IMPREC.name || IMPREC.title || '导入的镜头') : '自定义处方';
   }
   function exModel() {
-    return LENSEXPORT.model({ st: last.st, opt: last.opt, S: last.surfaces, cfgs: state.cfgs, cfg: state.cfg, rowsN: state.rows.length,
+    return LENSEXPORT.model({ st: cur.st, opt: cur.opt, S: cur.surfaces, cfgs: state.cfgs, cfg: state.cfg, rowsN: state.rows.length,
                               vigH: state.vigH, vigAuto: state.vigAuto, sdAp: state.sdAp, name: exLensName() });
   }
   var exZmx = LENSEXPORT.zmx, exSeq = LENSEXPORT.seq;
   function exSave(kind) {
-    if (!last) return;
+    if (!cur) return;
     var M = exModel(), r = kind === 'zmx' ? exZmx(M) : exSeq(M), blob;
     if (kind === 'zmx') {                            // UTF-16 LE + BOM
       var s = r.text, b = new Uint8Array(2 + 2 * s.length); b[0] = 0xFF; b[1] = 0xFE;
@@ -2545,10 +2707,10 @@
   /* 沿凸轮搜轴上 RMS 最小的位置。sur0 / opt0 缺省是当前这一版（last）；变焦时传进新焦段的面型与光圈。
      只算不写：返回 { tv（凸轮各面的厚度）, r0（搜之前）, rB（搜之后）, out（超出文件对焦行程）, D }，写回交给 camApply。 */
   function camSearch(cam, sur0, opt0) {
-    sur0 = sur0 || last.surfaces;
-    var base = Object.assign({}, opt0 || last.opt, { nGrid: 12, freqs: [], nRayViz: 3, nFieldViz: 1, fieldsMTF: [0], nField: 1, mtfMode: 'geo' });
+    sur0 = sur0 || cur.surfaces;
+    var base = Object.assign({}, opt0 || cur.opt, { nGrid: 12, freqs: [], nRayViz: 3, nFieldViz: 1, fieldsMTF: [0], nField: 1, mtfMode: 'geo' });
     var rmsAt = function (sur) {
-      var s = OPT.buildSystem(sur, base); s.vig = last.sys.vig;
+      var s = OPT.buildSystem(sur, base); s.vig = cur.sys.vig;
       var row = OPT.mtfVsField(s, base).rows[0];
       return (row && isFinite(row.rms) && row.rms > 0) ? row.rms : Infinity;
     };
@@ -2597,22 +2759,22 @@
     return true;
   }
   function planeFocus(why, surIn) {
-    var sur = surIn || last.surfaces;
+    var sur = surIn || cur.surfaces;
     // 直接沿用当前一次计算的全部设置（视场定义 / 物距 / 渐晕 / 波长），只把采样调粗、频率清空
-    var base = Object.assign({}, last.opt, { nGrid: 12, freqs: [], nRayViz: 3, nFieldViz: 1 });
+    var base = Object.assign({}, cur.opt, { nGrid: 12, freqs: [], nRayViz: 3, nFieldViz: 1 });
     if (base.fieldsMTF && base.fieldsMTF.length > 3) {
       var fm = base.fieldsMTF;
       base.fieldsMTF = [fm[0], fm[Math.floor((fm.length - 1) / 2)], fm[fm.length - 1]];
     } else if (!base.fieldsMTF) base.nField = 3;
     var cost = function (d) {
       var o = Object.assign({}, base, { defocus: d });
-      var s = OPT.buildSystem(sur, o); s.vig = last.sys.vig;
+      var s = OPT.buildSystem(sur, o); s.vig = cur.sys.vig;
       var r = OPT.mtfVsField(s, o);
       var s2 = 0, n = 0;
       r.rows.forEach(function (row) { if (isFinite(row.rms) && row.rms > 0) { s2 += row.rms * row.rms; n++; } });
       return n ? Math.sqrt(s2 / n) : Infinity;
     };
-    var efl = Math.abs(last.sys.efl); if (!isFinite(efl) || efl > 1e5) efl = 50;
+    var efl = Math.abs(cur.sys.efl); if (!isFinite(efl) || efl > 1e5) efl = 50;
     var lo = -0.02 * efl, hi = 0.02 * efl, best = 0, bv = Infinity, step;
     for (var pass = 0; pass < 2; pass++) {
       step = (hi - lo) / 16;
@@ -2773,13 +2935,14 @@
     }
     return e1 < e2 ? x1 : x2;
   }
-  function zoomModelNow() {
-    if (!last || !state.cfgs0 || !state.T0 || state.T0.length !== state.rows.length || last.surfaces.length !== state.rows.length) return null;
-    return zoomModel(state.cfgs0, state.T0, last.surfaces, last.opt);
+  function zoomModelNow(src) {
+    src = src || cur;
+    if (!src || !state.cfgs0 || !state.T0 || state.T0.length !== state.rows.length || src.surfaces.length !== state.rows.length) return null;
+    return zoomModel(state.cfgs0, state.T0, src.surfaces, src.opt);
   }
   function syncZoomUI() {
     var w = $('zoomWrap'); if (!w) return;
-    var cp = camNow();
+    var cp = camNow(last);
     if (cp && !cp.why) {
       w.hidden = false;
       $('zoomF').placeholder = fmt(cp.fmin, 1) + '–' + fmt(cp.fmax, 1);
@@ -2788,7 +2951,7 @@
       return;
     }
     $('zoomBtn').classList.remove('cam');
-    var zm = zoomModelNow(), on = !!(zm && !zm.why);
+    var zm = zoomModelNow(last), on = !!(zm && !zm.why);
     w.hidden = !on;
     if (!on) return;
     var inp = $('zoomF');
@@ -2815,7 +2978,7 @@
     if (!zm || zm.why) return false;
     zoomCams(zm);
     if (!zm.fk.length) return false;
-    var gm = {}; zm.keys.forEach(function (k) { gm[k] = last.surfaces[k].T; });
+    var gm = {}; zm.keys.forEach(function (k) { gm[k] = cur.surfaces[k].T; });
     var p = zoomEstimate(zm, gm), cam = zoomCam(zm, p);
     var r = cam && camSearch(cam);
     if (!r) return false;
@@ -2855,15 +3018,15 @@
     var fnoNew = null, cfg = state.cfgs && state.cfgs[state.cfg];
     if (A.fno != null && B.fno != null && Math.abs(A.fno - B.fno) > 1e-9) fnoNew = A.fno + nb.w * (B.fno - A.fno);
     else if (atNode && A.fno != null && Math.abs(A.fno - (+$('fno').value)) > 1e-9 && zm.nodes.some(function (n) { return n.fno !== A.fno; })) fnoNew = A.fno;
-    var optZ = Object.assign({}, last.opt); if (fnoNew != null) optZ.fno = fnoNew;
+    var optZ = Object.assign({}, cur.opt); if (fnoNew != null) optZ.fno = fnoNew;
     var optInf = Object.assign({}, optZ, { objDist: Infinity });
-    var D0 = last.opt.objDist, finD = isFinite(D0) && D0 > 0 && D0 < 1e7;
+    var D0 = cur.opt.objDist, finD = isFinite(D0) && D0 > 0 && D0 < 1e7;
     /* 焦距校正：zoomSolve 里对焦用的是七条光线的快速判据，最后一步用的是「轴上 RMS 最小」，
        两者差一点对焦群就差一点，EFL 能差 0.005 mm。这里用最后同一判据在无限远上量 EFL，割线修正凸轮参数 */
     var infAt = function (pp) {
-      var Zp = zoomGaps(zm, pp), cp = zoomCam(zm, pp), rr = cp && camSearch(cp, withT(last.surfaces, Zp), optInf), g = Zp;
+      var Zp = zoomGaps(zm, pp), cp = zoomCam(zm, pp), rr = cp && camSearch(cp, withT(cur.surfaces, Zp), optInf), g = Zp;
       if (rr) { g = Object.assign({}, Zp); cp.surf.forEach(function (k, q) { g[k] = rr.tv[q]; }); }
-      return { p: pp, Z: Zp, cam: cp, r: rr, efl: Math.abs(OPT.buildSystem(withT(last.surfaces, g), optInf).efl) };
+      return { p: pp, Z: Zp, cam: cp, r: rr, efl: Math.abs(OPT.buildSystem(withT(cur.surfaces, g), optInf).efl) };
     };
     var E = null;
     if (!atNode) {
@@ -2879,7 +3042,7 @@
       state.rows[k].T = fmtT(Z[k]);
       if (cfg && cfg.thi) cfg.thi[k] = +Z[k].toFixed(6);
     });
-    var sur1 = withT(last.surfaces, Z), surF = sur1, focusTxt = '';
+    var sur1 = withT(cur.surfaces, Z), surF = sur1, focusTxt = '';
     var cam = zoomCam(zm, p), r = null;
     if (atNode && !finD) { if (cam) zm.fk.forEach(function (k) { state.rows[k].T = fmtT(Z[k]); if (cfg && cfg.thi) cfg.thi[k] = +Z[k].toFixed(6); }); }
     else if (cam) r = (!finD && E && E.r) ? E.r : camSearch(cam, sur1, optZ);
@@ -2954,10 +3117,11 @@
     if (CAMCACHE) CAMCACHE.set(C, P);
     return P;
   }
-  function camNow() {
+  function camNow(src) {
     var C = state.zoomcam;
-    if (!C || !last) return null;
-    if (last.surfaces.length !== state.rows.length || Math.max.apply(null, C.keys) >= state.rows.length)
+    src = src || cur;
+    if (!C || !src) return null;
+    if (src.surfaces.length !== state.rows.length || Math.max.apply(null, C.keys) >= state.rows.length)
       return { why: '插删过面，凸轮数据里的面号和表格对不上' };
     return camPrep(C);
   }
@@ -2997,8 +3161,9 @@
   }
   /* 表格现在的状态在凸轮上对应什么：变焦间隔反推焦距，对焦间隔（减去该焦段的 ∞ 位置）反推对焦距离 D。
      旧的工作 F/# 按这个状态从表里取，F/# 的比例缩放就总和表格一致，不依赖上一次操作记下的东西（刷新、撤销后也对） */
-  function camState(P) {
-    var gm = {}; P.keys.forEach(function (k) { gm[k] = last.surfaces[k].T; });
+  function camState(P, src) {
+    src = src || cur;
+    var gm = {}; P.keys.forEach(function (k) { gm[k] = src.surfaces[k].T; });
     var est = camEstimate(P, gm), f = -1 / est.x, Z = camGaps(P, est.x);
     var res = { x: est.x, f: f, rms: est.rms, D: Infinity, frms: 0 };
     if (!P.rows.length) return res;
@@ -3056,10 +3221,10 @@
     var cfg = state.cfgs && state.cfgs[state.cfg];
     var put = function (k, v) { state.rows[k].T = fmtT(v); if (cfg && cfg.thi) cfg.thi[k] = +v.toFixed(6); };
     P.keys.forEach(function (k) { put(k, Z[k]); });
-    var od = last.opt.objDist, fin = isFinite(od) && od > 0 && od < 1e7, txt = '', F = null;
+    var od = cur.opt.objDist, fin = isFinite(od) && od > 0 && od < 1e7, txt = '', F = null;
     var f = -1 / x;
     if (fin && P.rows.length) {
-      var D = od + camTrack(last.surfaces, Z);
+      var D = od + camTrack(cur.surfaces, Z);
       F = camFocusAt(P, f, D);
       P.fk.forEach(function (k) { put(k, Z[k] + F.dt[k]); });
       txt = '对焦组（' + (camGroupsOf(P.C, 'focus') || P.fk.map(function (k) { return 'S' + (k + 1); }).join(' / ')) + '）按对焦表对到 ' +
@@ -3095,12 +3260,12 @@
     var f = Math.min(P.fmax, Math.max(P.fmin, fIn)), clampTxt = '';
     if (Math.abs(f - fIn) > 1e-9) clampTxt = '填的 ' + (+fIn.toFixed(3)) + ' mm 超出凸轮范围 ' + fmt(P.fmin, 2) + '–' + fmt(P.fmax, 2) + ' mm，按 ' + fmt(f, 2) + ' mm 算。';
     var S0 = camState(P);
-    var x = camSolveX(P, f, last.surfaces, last.opt), Z = camGaps(P, x), ang = camAngle(P, x);
+    var x = camSolveX(P, f, cur.surfaces, cur.opt), Z = camGaps(P, x), ang = camAngle(P, x);
     var A = camApplyState(P, x, Z);
     var fnoTxt = camFno(P, S0, A.F, f);
-    var optZ = Object.assign({}, last.opt, { fno: +$('fno').value });
+    var optZ = Object.assign({}, cur.opt, { fno: +$('fno').value });
     var gF = {}; P.keys.forEach(function (k) { gF[k] = parseFloat(state.rows[k].T); });
-    var surF = withT(last.surfaces, gF), vigTxt = camVig(optZ, surF);
+    var surF = withT(cur.surfaces, gF), vigTxt = camVig(optZ, surF);
     var eflF = Math.abs(OPT.buildSystem(surF, optZ).efl);
     PENDMSG.push('变焦到 ' + fmt(f, 2) + ' mm（' + camSrcTxt(P.C) + '）：' + clampTxt +
       (ang != null ? '变焦环 ' + fmt(ang, 1) + '°' + (P.C.rot ? ' / ' + P.C.rot + '°' : '') + '，' : '') +
@@ -3110,16 +3275,16 @@
   }
   /* 「最佳对焦」：先认出当前在凸轮的哪一点，再按对焦表对到当前物距（不做 RMS 搜索——对焦位置就是镜头的对焦表） */
   function camFocusNow(P) {
-    var gm = {}; P.keys.forEach(function (k) { gm[k] = last.surfaces[k].T; });
+    var gm = {}; P.keys.forEach(function (k) { gm[k] = cur.surfaces[k].T; });
     if (!P.rows.length) return false;
     var S0 = camState(P), est = { x: S0.x, rms: S0.rms };
     var x = est.x, Z = camGaps(P, x), cfg = state.cfgs && state.cfgs[state.cfg];
     // 只动对焦间隔：变焦间隔保持表格里的值（用户可能手改过，那份偏差留给用户看）
     var Zf = Object.assign({}, gm); P.fk.forEach(function (k) { Zf[k] = Z[k]; });
-    var od = last.opt.objDist, fin = isFinite(od) && od > 0 && od < 1e7, F = null, txt;
+    var od = cur.opt.objDist, fin = isFinite(od) && od > 0 && od < 1e7, F = null, txt;
     var put = function (k, v) { state.rows[k].T = fmtT(v); if (cfg && cfg.thi) cfg.thi[k] = +v.toFixed(6); };
     if (fin) {
-      F = camFocusAt(P, -1 / x, od + camTrack(last.surfaces, Zf));
+      F = camFocusAt(P, -1 / x, od + camTrack(cur.surfaces, Zf));
       P.fk.forEach(function (k) { put(k, Z[k] + F.dt[k]); });
       txt = '按对焦表对到 ' + distTxt(od) + '：' + P.fk.map(function (k) { return 'S' + (k + 1) + ' ' + (F.dt[k] >= 0 ? '+' : '') + F.dt[k].toFixed(3); }).join('、') + ' mm（相对 ∞）。' +
         (F.clamp ? '⚠ 比这个焦段的最近对焦距离（物面到像面 ' + fmt(F.mfd, 0) + ' mm）还近，按最近对焦距离算。' : '') +
@@ -3139,9 +3304,9 @@
   function camAttach(J, fname) {
     var C;
     try { C = LENSIO.camCompact(J); } catch (err) { showMsgs(['凸轮数据读不了：' + err.message]); return; }
-    if (!last) return;
+    if (!cur) return;
     if (Math.max.apply(null, C.keys) >= state.rows.length) { showMsgs(['凸轮数据的间隔面号超出当前镜头的面数（' + state.rows.length + ' 面），不是这颗镜头的凸轮。']); return; }
-    var P = camPrep(C), sur = last.surfaces, optInf = Object.assign({}, last.opt, { objDist: Infinity, defocus: 0 });
+    var P = camPrep(C), sur = cur.surfaces, optInf = Object.assign({}, cur.opt, { objDist: Infinity, defocus: 0 });
     var chk = [], worst = 0;
     var inf = function (c) { var D = c.obj; return D == null || !isFinite(D) || D <= 0 || D >= 1e7; };
     var cfs = (state.cfgs0 && state.cfgs0.length && state.T0 && state.T0.length === sur.length) ? state.cfgs0.filter(inf) : [];
@@ -3166,7 +3331,7 @@
   }
   function camLensKey() { return state.libId ? 'lib:' + state.libId : (state.imp && IMPREC ? 'imp:' + libSig(IMPREC) : 'tx'); }
   $('zoomBtn').addEventListener('click', function () {
-    if (!last) return;
+    if (!cur) return;
     var btn = this, label = btn.textContent, f = parseFloat($('zoomF').value);
     btn.textContent = '计算中…'; btn.disabled = true;
     setTimeout(function () {
@@ -3176,7 +3341,7 @@
   });
   $('zoomF').addEventListener('keydown', function (e) { if (e.key === 'Enter') { e.preventDefault(); $('zoomBtn').click(); } });
   $('focusBtn').addEventListener('click', function () {
-    if (!last) return;
+    if (!cur) return;
     var btn = this, label = btn.textContent;
     btn.textContent = '搜索中…'; btn.disabled = true;
     setTimeout(function () {
@@ -3185,7 +3350,7 @@
         var done = zoomFocus();
         if (!done) {
           // 插删过面，下标对不上文件原样的结构，凸轮不可用
-          var cam = (state.T0 && state.T0.length === state.rows.length && last.surfaces.length === state.rows.length)
+          var cam = (state.T0 && state.T0.length === state.rows.length && cur.surfaces.length === state.rows.length)
             ? focusCam(state.cfgs0, state.T0, state.cfg) : null;
           done = cam && !cam.why && camFocus(cam);
           if (!done) planeFocus(cam && cam.why ? cam.why : (state.cfgs0 && state.cfgs0.length > 1 ? '插删过面，和文件的结构对不上' : null));
@@ -3223,7 +3388,7 @@
       : '按镜片的真实通光重算本结构的渐晕系数（CODE V 的 SET VIGNETTING）';
   }
   $('vigBtn').addEventListener('click', function () {
-    if (!last) return;
+    if (!cur) return;
     if (state.vigAuto && state.vigAuto[state.cfg]) {          // 已经是按通光的 → 换回文件值
       delete state.vigAuto[state.cfg];
       if (!Object.keys(state.vigAuto).length) state.vigAuto = null;
@@ -3235,14 +3400,14 @@
     btn.textContent = '计算中…'; btn.disabled = true;
     setTimeout(function () {
       try {
-        var st = readState(), AV = autoVigTable(last.sys, last.opt, st), v = AV && AV.v, fr = AV && AV.fr, i;
+        var st = readState(), AV = autoVigTable(cur.sys, cur.opt, st), v = AV && AV.v, fr = AV && AV.fr, i;
         if (!v) {
           PENDMSG.push('一键渐晕没算：这颗镜头没有任何写死的通光（CODE V 的 CIR、Zemax 的固定 DIAM / 浮动通光 FLAP），'
             + '没有孔径就无从判断谁挡住了谁。可以在「半孔径」列直接填上镜片的通光半径，再按一次。');
           schedule(0); return;
         }
         var sdOf = function (k) {
-          var s2 = last.sys.surfaces[k];
+          var s2 = cur.sys.surfaces[k];
           return (s2 && s2.sd) || (state.sdAp && state.sdAp[k]) || 0;
         };
         var cnt = {}, nl = 0;
@@ -3252,7 +3417,7 @@
           .map(function (k) { return 'S' + (+k + 1) + '(半口径 ' + (+sdOf(+k).toFixed(3)) + " mm" + '，' + cnt[k] + ' 个视场)'; }).join('、');
         var wid = function (u, l) { return (2 - u - l) / 2; };          // 子午瞳宽占满瞳的比例
         var note = '渐晕已按真实通光重算（CODE V 的 SET VIGNETTING）：' + v.nAp + ' 个通光面参与判断，'
-          + '光阑面 S' + (last.opt.stopIdx + 1) + ' 不参与（归一化瞳坐标 ±1 就是它的边缘，它不会渐晕自己）；'
+          + '光阑面 S' + (cur.opt.stopIdx + 1) + ' 不参与（归一化瞳坐标 ±1 就是它的边缘，它不会渐晕自己）；'
           + '取 ' + VIGN + ' 个视场点。'
           + (limTxt ? '主要限制面：' + limTxt + '。' : '全视场都没被挡，渐晕系数全为 0。');
         var cv = (state.cfgs && state.cfgs[state.cfg] && state.cfgs[state.cfg].vig) || null;
@@ -3515,6 +3680,21 @@
   }
   // 留一个线程给页面本身
   var SPOT_THREADS = Math.max(1, Math.min(15, (navigator.hardwareConcurrency || 4) - 1));
+  /* 一段 <script id="src-…"> 的源码文本（Spot 和 MTF 的 Worker 共用，取过一次就缓存；取失败下次重取） */
+  var SRCTXT = {};
+  function srcText(k) {
+    if (SRCTXT[k]) return SRCTXT[k];
+    var el = document.getElementById('src-' + k), src = el && el.getAttribute('src');
+    var p = !el ? Promise.reject(new Error('页面里没有 src-' + k + ' 脚本（构建产物太旧）'))
+      : !src ? Promise.resolve(el.textContent)
+      : fetch(new URL(src, location.href).href).then(function (r) {
+          if (!r.ok) throw new Error(src + ' ' + r.status);
+          return r.text();
+        });
+    SRCTXT[k] = p;
+    p.catch(function () { if (SRCTXT[k] === p) delete SRCTXT[k]; });
+    return p;
+  }
   /* Worker 的源码：单文件版直接取内联 <script> 的文本；静态站用 fetch 把 js/ 里的文件读成文本。
      不用 importScripts —— 它对 MIME 类型是严格的，Python 的 http.server 在 Windows 上把 .js
      当 text/plain 发，Worker 就起不来（主页面的 <script src> 宽松，所以页面本身没事）。
@@ -3524,16 +3704,7 @@
     if (SPOTSRC[backend]) return SPOTSRC[backend];
     var scripts = ['glassdb', 'optics'];
     if (backend === 'gpu') scripts.push('spot-gpu-display','spot-display-shader','spot-cache','spot-gpu-post','spot-gpu-tasks','spot-gpu-prepare','spot-webgpu', 'spot-webgpu-shader');
-    SPOTSRC[backend] = Promise.all(scripts.map(function (k) {
-      var el = document.getElementById('src-' + k);
-      if (!el) return Promise.reject(new Error('页面里没有 src-' + k + ' 脚本（构建产物太旧）'));
-      var src = el.getAttribute('src');
-      if (!src) return Promise.resolve(el.textContent);
-      return fetch(new URL(src, location.href).href).then(function (r) {
-        if (!r.ok) throw new Error(src + ' ' + r.status);
-        return r.text();
-      });
-    })).then(function (parts) {
+    SPOTSRC[backend] = Promise.all(scripts.map(srcText)).then(function (parts) {
       // 子线程只要 glassdb + optics（scripts 的头两个）
       SPOT.subSrc = parts[0] + '\n' + parts[1] + '\n(' + spotSubMain.toString() + ')();';
       parts.push('(' + spotWorkerMain.toString() + ')();');
@@ -3543,10 +3714,10 @@
     return SPOTSRC[backend];
   }
   function spotFields(n) {
-    var st = last.st, lam = last.opt.lambdas[last.opt.primary].nm / 1000, out = [];
+    var st = cur.st, lam = cur.opt.lambdas[cur.opt.primary].nm / 1000, out = [];
     for (var i = 0; i < n; i++) {
       var f = i / (n - 1);
-      out.push(st.fmode === 'height' ? OPT.angleForHeight(last.sys, st.fov * f, lam) : st.fov * f);
+      out.push(st.fmode === 'height' ? OPT.angleForHeight(cur.sys, st.fov * f, lam) : st.fov * f);
     }
     return out;
   }
@@ -3559,8 +3730,12 @@
     $('spotBtn').disabled = false; $('spotStop').disabled = true; $('spotProg').hidden = true;
     if (!keepBadge) $('spotBadge').textContent = SPOT.hasImg ? '已停止 · 有格子没算完' : '已停止';
   }
+  /* compute 画完一次时调：这次的系统不是 Spot 用的那份，就标过期（Spot 读的是 cur，可能比屏幕上的 last 新；
+     还在算的先记下，算完再标） */
   function spotStale() {
-    if (SPOT.hasImg && !SPOT.busy) $('spotBadge').textContent = '已过期 · 镜头参数已改';
+    var same = SPOT.src && last && last.sys === SPOT.src;
+    if (SPOT.busy) { if (!same) SPOT.stale = true; return; }
+    if (SPOT.hasImg && !same) $('spotBadge').textContent = '已过期 · 镜头参数已改';
   }
   function spotProgress(step, total, rays) {
     var dt = (performance.now() - SPOT.t0) / 1000, pct = total ? 100 * step / total : 0;
@@ -3573,23 +3748,24 @@
     return sourceBackend === backend || sourceBackend === 'gpu';
   }
   function spotRun() {
-    if (!last) return;
+    if (!cur) return;
     var backendKey=$('spotBackend').value;
     if(SPOT.busy || (SPOT.worker&&!spotWorkerSupports(SPOT.backend,backendKey)) || (SPOT.loading&&!spotWorkerSupports(SPOT.loading.backend,backendKey)))spotStop(true);
-    var st = last.st, nF = +$('spotNF').value, R = +$('spotN').value, px = +$('spotPx').value;
+    var st = cur.st, nF = +$('spotNF').value, R = +$('spotN').value, px = +$('spotPx').value;
     var um = parseFloat($('spotUm').value); if (!(um > 0)) um = 400;
-    var lamIdx = $('spotWl').value === 'pri' ? [last.opt.primary]
-      : last.opt.lambdas.map(function (_, i) { return i; });
+    var lamIdx = $('spotWl').value === 'pri' ? [cur.opt.primary]
+      : cur.opt.lambdas.map(function (_, i) { return i; });
     SPOT.meta = { fields: spotFields(nF), lamIdx: lamIdx, px: px, um: um, R: R,
                   colors: lamIdx.map(function (i) { return hex2rgb(st.wl[i].c || '#ffffff').map(function (v) { return v / 255; }); }),
-                  weights: lamIdx.map(function (i) { return last.opt.lambdas[i].w > 0 ? last.opt.lambdas[i].w : 1; }) };
+                  weights: lamIdx.map(function (i) { return cur.opt.lambdas[i].w > 0 ? cur.opt.lambdas[i].w : 1; }) };
     SPOT.prep = null; SPOT.hasImg = false; SPOT.t0 = performance.now();
-    SPOT.busy=true;
+    SPOT.busy=true; SPOT.src = cur.sys;
+    SPOT.stale = SCHED;                                   // 镜头刚改、重算还没开始：这一张用的是改之前的系统
     $('spotBadge').textContent = SPOT.worker?'准备计算…':'加载计算模块…'; $('spotBtn').disabled = true; $('spotStop').disabled = false;
     $('spotLegend').innerHTML = '';
     $('spotProg').hidden = false; $('spotProgBar').style.width = '0%'; $('spotProgTxt').textContent = $('spotBadge').textContent;
     var run = ++SPOT.seq;
-    var msg = { cmd: 'run', backend: $('spotBackend').value, tx: st.tx, opt: last.opt, vig: last.sys.vig || null, targetUm: um, fields: SPOT.meta.fields,
+    var msg = { cmd: 'run', backend: $('spotBackend').value, tx: st.tx, opt: cur.opt, vig: cur.sys.vig || null, targetUm: um, fields: SPOT.meta.fields,
                 runSeq:run,lamIdx: lamIdx, R: R, px: px, colors: SPOT.meta.colors, weights: SPOT.meta.weights, threads: SPOT_THREADS };
     // 子线程源码在取 Worker 源码时才备好，发送时再挂上
     if(SPOT.worker){msg.subSrc=SPOT.subSrc;SPOT.worker.postMessage(msg);return;}
@@ -3692,7 +3868,7 @@
     }
     if (m.type === 'done') {
       var dt = (performance.now() - SPOT.t0) / 1000;
-      $('spotBadge').textContent = m.engine + ' · ' + m.rays.toLocaleString('en-US') + ' 条 · ' + dt.toFixed(1) + ' s';
+      $('spotBadge').textContent = m.engine + ' · ' + m.rays.toLocaleString('en-US') + ' 条 · ' + dt.toFixed(1) + ' s' + (SPOT.stale ? ' · 已过期 · 镜头参数已改' : '');
       if(m.persistent || SPOT.backend==='gpu'){SPOT.busy=false;$('spotBtn').disabled=false;$('spotStop').disabled=true;$('spotProg').hidden=true;}else spotStop(true);
     }
   }
@@ -3933,8 +4109,9 @@
       var dz = axialBestFocus(sys, opt);
       if (dz !== null && isFinite(dz)) { opt.defocus = dz; sys = cmpAttach(sur, opt, L, c, S, ci, shrink); }
     }
+    // mtf 由 cmpRun 交给 mtfBatch 多线程算完再填上
     return { L: L, opt: opt, sys: sys, wl: P.wl, hgt: (L.fmode || 'height') === 'height', ap: ap,
-             mtf: OPT.mtfVsField(sys, opt), lay: OPT.layoutGeometry(sys, opt) };
+             mtf: null, lay: OPT.layoutGeometry(sys, opt) };
   }
   /* 收到多少：「收到和另一只一样」取两只里较暗的工作 F/#；「指定 F/#」取填的值 */
   function cmpApTarget(S, PA, PB) {
@@ -3988,14 +4165,25 @@
   /* ---- 计算 + 画 ---- */
   function cmpRun() {
     if (!CMP.on || FC.tab !== 'mtf') return;          // 「MTF 30 lp/mm vs 放大倍率」标签开着时不算 A/B（两颗都要实时追迹，白耗）
-    var S = cmpShared(), P = {};
+    var S = cmpShared(), P = {}, R = {}, jobs = [], ks = [];
     ['A', 'B'].forEach(function (k) { P[k] = CMP[k].L ? cmpPrep(CMP[k].L, CMP[k].cfg, S) : null; });
     var tgt = cmpApTarget(S, P.A, P.B);
     ['A', 'B'].forEach(function (k) {
-      CMP[k].res = P[k] ? cmpFinish(P[k], S, tgt) : null;
-      cmpSide(k);
+      R[k] = P[k] ? cmpFinish(P[k], S, tgt) : null;
+      if (R[k]) { jobs.push({ sys: R[k].sys, opt: R[k].opt }); ks.push(k); }
     });
-    cmpChart(S);
+    // 两颗的视场一起排进 Worker 池（多线程），全部回来再一起换上、一起画；换上之前 CMP.A/B.res 还是上一次的完整结果
+    var show = function () {
+      ['A', 'B'].forEach(function (k) { CMP[k].res = R[k]; cmpSide(k); });
+      cmpChart(S);
+    };
+    if (!jobs.length) { mtfCancel('cmp'); show(); return; }
+    $('cmpBadge').textContent = '计算中…';
+    mtfBatch('cmp', jobs, function (res) {
+      ks.forEach(function (k, j) { R[k].mtf = res[j]; });
+      if (!CMP.on || FC.tab !== 'mtf') return;      // 算的时候对比页关了 / 换了标签：不画（下次打开会重算）
+      show();
+    });
   }
   function cmpSide(k) {
     var R = CMP[k].res;
@@ -4120,7 +4308,7 @@
     var sh = $('cmpSheet');
     sh.hidden = !on; CMP.on = on;
     document.body.style.overflow = on ? 'hidden' : '';
-    if (!on) return;
+    if (!on) { mtfCancel('cmp'); return; }
     sh.scrollTop = 0;
     cmpTab(FC.tab);
   }
@@ -4194,6 +4382,7 @@
   /* ---- 标签页 ---- */
   function cmpTab(t) {
     FC.tab = t;
+    if (t !== 'mtf') mtfCancel('cmp');               // 换到对焦全程那页：A/B 的 MTF 不用再算了
     [].forEach.call(document.querySelectorAll('[data-cmptab]'), function (b) {
       var on = b.getAttribute('data-cmptab') === t;
       b.classList.toggle('on', on); b.setAttribute('aria-selected', on ? 'true' : 'false');
@@ -4493,6 +4682,7 @@
   renderWL();
   // 同步载入（单文件版）时 restore 已排过一次重算；这里只算一次，提示（如「库更新过」）才不会马上被下一次清掉。
   // 镜头还在下载（静态站）就先不算：空处方算一遍只会把排队的提示吃掉，下载完的回调自己会算
+  mtfWarm();                  // MTF 的 Worker 池先备着（取源码是异步的，这一次同步的首算还在主线程；之后的重算走多线程）
   if (!lensPending) { clearTimeout(timer); compute(); }
 
   if (window.ResizeObserver) {

@@ -998,12 +998,49 @@ var OPT = (function () {
        OTF = 圆孔径解析面积因子（截止频率按各方向的瞳半宽缩放）× 波前相位平均 ⟨exp(iΔφ)⟩。
        无像差时相位平均恒为 1，精确退化为对应孔径的衍射极限。
      ------------------------------------------------------------------ */
+  /* MTF 的视场点：给了 fieldsMTF 就用它，否则 0…maxFov 等分 nField 个。
+     单独提出来是给多线程用的（app.js 按视场拆给 Worker）：主线程按这里列出视场、每个 Worker 只算其中一个，
+     必须和 mtfVsField 自己列的逐位相同 */
+  function mtfFieldList(opt) {
+    if (opt.fieldsMTF && opt.fieldsMTF.length) return opt.fieldsMTF.slice();
+    var fields = [], nF = opt.nField;
+    for (var i = 0; i < nF; i++) fields.push(opt.maxFov * i / (nF - 1));
+    return fields;
+  }
+
+  /* 多线程 MTF 的系统打包（11-17，作者要求网页 MTF 按视场分给 Worker）：
+     系统对象里每个面的折射率 n(λ) 是函数，postMessage 传不过去。这里按本次要用的波长（opt.lambdas，
+     和 mtfVsField 里 wl[i].nm / 1000 同一个算式）先把 n 算成表，其余字段原样拷贝；
+     记忆化缓存（折射率的 _nk / _nv、瞄准的 _aimC）不带——它们只影响快慢，结果和计算顺序无关（见 aim 的注释）。
+     Worker 里 sysUnpack 把表还原成查表函数：同一个 λ 查到的就是主线程算出的那个双精度数，追迹逐位相同。
+     查不到（用了表外的波长）就抛错，app.js 退回主线程单线程算，不会悄悄算错。 */
+  function sysPack(sys, opt) {
+    var lams = opt.lambdas.map(function (w) { return w.nm / 1000; }), out = {};
+    Object.keys(sys).forEach(function (k) { if (k !== 'surfaces' && k !== '_aimC') out[k] = sys[k]; });
+    out.surfaces = sys.surfaces.map(function (s) {
+      var o = {};
+      Object.keys(s).forEach(function (k) { if (k !== 'n' && k !== '_nk' && k !== '_nv') o[k] = s[k]; });
+      o.nTab = [lams.slice(), lams.map(function (l) { return s.n(l); })];
+      return o;
+    });
+    return out;
+  }
+  function sysUnpack(p) {
+    p.surfaces.forEach(function (s) {
+      var L = s.nTab[0], V = s.nTab[1];
+      delete s.nTab;
+      s.n = function (l) {
+        for (var i = 0; i < L.length; i++) if (L[i] === l) return V[i];
+        throw new Error('折射率表里没有 λ = ' + l + ' µm');
+      };
+    });
+    return p;
+  }
+
   function mtfVsField(sys, opt) {
     var N = opt.nGrid, grid = pupilGrid(N), h = sys.epd / 2;
     var diff = opt.mtfMode === 'diff';
-    var fields, nF;
-    if (opt.fieldsMTF && opt.fieldsMTF.length) { fields = opt.fieldsMTF.slice(); nF = fields.length; }
-    else { fields = []; nF = opt.nField; for (var i = 0; i < nF; i++) fields.push(opt.maxFov * i / (nF - 1)); }
+    var fields = mtfFieldList(opt), nF = fields.length;
     var freqs = opt.freqs, wl = opt.lambdas;
     var useAim = sys.aiming, hs = useAim ? sys.surfaces[sys.stopIdx].sd : 0;
     var lam0 = wl[opt.primary || 0].nm / 1000;
@@ -2165,7 +2202,8 @@ var OPT = (function () {
     paraxFromObject: paraxFromObject, pupilSpan: pupilSpan,
     buildSystem: buildSystem, firstOrder: firstOrder, traceRay: traceRay, launch: launch, aim: aim,
     startRay: startRay,
-    mtfVsField: mtfVsField, diffractionMTF: diffractionMTF, angleForHeight: angleForHeight, layoutGeometry: layoutGeometry, pupilSpan: pupilSpan,
+    mtfVsField: mtfVsField, mtfFieldList: mtfFieldList, sysPack: sysPack, sysUnpack: sysUnpack,
+    diffractionMTF: diffractionMTF, angleForHeight: angleForHeight, layoutGeometry: layoutGeometry, pupilSpan: pupilSpan,
     setVig: setVig, pupilGrid: pupilGrid, sag: sag, pupilXY: pupilXY, aberrations: aberrations, chiefHeight: chiefHeight, rayFan: rayFan
   };
 })();
