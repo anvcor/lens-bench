@@ -114,11 +114,40 @@ var LENSEXPORT = (function () {
     for (var i = 0; i < M.n; i++) if (M.cfgs.some(function (c) { return Math.abs(c[key][i] - M.cfgs[0][key][i]) > 1e-12; })) out.push(i);
     return out;
   }
+  /* 对焦组的位置解：各结构里变的间隔按面号顺序累加，累加和在所有结构都不变（≤ 0.02 mm，专利间隔四舍五入到 0.01）
+     就闭合成一段——段首间隔到段尾间隔之间的镜片是对焦组（浮动对焦几组各走各的也在同一段里）。
+     段尾间隔写成位置解（Zemax TOLE / CODE V THI … OAL），各结构的值照样还原，改段内前面的间隔 = 移动对焦组，
+     段尾自动补偿，段外的镜片和像面不动。闭合不了的（后截距在变、前组伸出）本来就是总长在变，不写解。
+     源文件里原本的 TOLE/TCOM 导入时已经算进各结构厚度，这里按结构重新认，原本带解的镜头导出也带解。
+     返回 [{ ref, surf, val, dev }]，ref / surf 是 0 起的面下标（= 面号 − 1）。 */
+  function exSolves(M) {
+    if (M.cfgs.length < 2) return [];
+    var vary = exVary(M, 'T'), out = [], i = 0;
+    var sums = function (a, b) { return M.cfgs.map(function (c) { var t = 0; for (var q = a; q <= b; q++) t += exBfl(M, c, q); return t; }); };
+    while (i < vary.length) {
+      var hit = false;
+      for (var j = i + 1; j < vary.length; j++) {
+        var sm = sums(vary[i], vary[j]), dev = Math.max.apply(null, sm) - Math.min.apply(null, sm);
+        if (dev <= 0.02) { out.push({ ref: vary[i], surf: vary[j], val: sm[0], dev: dev }); i = j + 1; hit = true; break; }
+      }
+      if (!hit) i++;
+    }
+    return out;
+  }
+  function exSolveWarn(sv, warn) {
+    sv.forEach(function (s) {
+      if (s.dev > 1e-6) warn.push('S' + (s.ref + 1) + '..S' + (s.surf + 1) + ' 的厚度和各结构差 ' + s.dev.toFixed(4) +
+        ' mm（专利间隔四舍五入），位置解按第 1 个结构的 ' + exN(s.val) + '，其余结构的 S' + (s.surf + 1) + ' 会跟着差这么多。');
+    });
+  }
   function exAp(M, i, s) { return s.sd || (i !== M.opt.stopIdx && M.sdAp && M.sdAp[i]) || 0; }
   function exBfl(M, c, i) { return c.T[i] + (i === M.n - 1 ? M.defoc : 0); }
 
   function exZmx(M) {
     var st = M.st, opt = M.opt, L = [], warn = M.warn.slice(), gcat = [], nF = M.fv.length, nW = opt.lambdas.length, C0 = M.cfgs[0];
+    var SV = exSolves(M), svAt = {};
+    SV.forEach(function (s) { svAt[s.surf] = s; });
+    exSolveWarn(SV, warn);
     var rep = function (v) { var a = []; for (var i = 0; i < nF; i++) a.push(v); return a.join(' '); };
     var apVal = st.apmode === 'fnoinf' || st.apmode === 'fno' ? function (c) { return c.fno; } : function (c) { return c.epd; };
     // 光阑浮动：照原文件写 FLOA（Float By Stop Size），光阑面写固定半口径、不加 FLAP，也不进 MCE 的 APER
@@ -153,6 +182,8 @@ var LENSEXPORT = (function () {
       if (ty === 'XOSPHERE') { L.push(XD(1, s.aspo.length), XD(2, 1)); s.aspo.forEach(function (v, j) { L.push(XD(j + 3, v)); }); }
       if (ty === 'BINARY_2') { L.push(XD(1, s.doe.b.length), XD(2, 1)); s.doe.b.forEach(function (v, j) { L.push(XD(j + 3, v / s.doe.m)); }); }
       L.push('  DISZ ' + exN(exBfl(M, C0, i)));
+      // 位置解：面 ref..本面（含）的厚度和 = val。MCE 里这一面不能再有 THIC 行，否则 Zemax 按 MCE 赋值、解失效
+      if (svAt[i]) L.push('  TOLE ' + (svAt[i].ref + 1) + ' ' + exN(svAt[i].val));
       var g = M.gl[i];
       if (g.kind === 'model') L.push('  GLAS ___BLANK 1 0 ' + exN(g.nd) + ' ' + exN(g.vd) + ' ' + exN(g.dp) + ' 0 0 0 0 0');
       else if (g.kind !== 'air') {
@@ -171,7 +202,7 @@ var LENSEXPORT = (function () {
       L.push('MNUM ' + M.cfgs.length + ' 1');
       M.cfgs.forEach(function (c, ci) { L.push('LTTL 0 ' + (ci + 1) + ' "' + String(c.title).replace(/["\r\n]+/g, ' ') + '" 0 0 0 1 1 1 0 0'); });
       mce('THIC', 0, M.cfgs.map(function (c) { return isFinite(c.obj) ? exN(c.obj) : '1.00000000E+10'; }));
-      exVary(M, 'T').forEach(function (i) { mce('THIC', i + 1, M.cfgs.map(function (c) { return exN(exBfl(M, c, i)); })); });
+      exVary(M, 'T').forEach(function (i) { if (!svAt[i]) mce('THIC', i + 1, M.cfgs.map(function (c) { return exN(exBfl(M, c, i)); })); });
       exVary(M, 'R').forEach(function (i) { mce('CRVT', i + 1, M.cfgs.map(function (c) { return c.R[i] ? exN(1 / c.R[i]) : '0'; })); });
       if (!floa) mce('APER', 0, M.cfgs.map(function (c) { return exN(apVal(c)); }));
       ['FVDX', 'FVDY', 'FVCX', 'FVCY'].forEach(function (op) {
@@ -300,12 +331,20 @@ var LENSEXPORT = (function () {
       }
     });
     L.push('SI    0 0');
+    // 位置解：THI Sk OAL Si..j = 面 i 到 j 的总长（THI Si + … + THI Sj-1），LensSystemSetupRM「Using Solves」。
+    // 批量算对焦全程曲线（tools/fcseq.js，带 o.prv）不写：.seq 一变已算的曲线全判过期，解也会和 fccodev 的对焦搜索打架
+    var SV = o && o.prv ? [] : exSolves(M), svAt = {};
+    SV.forEach(function (s) {
+      svAt[s.surf] = s;
+      L.push('THI   S' + (s.surf + 1) + ' OAL S' + (s.ref + 1) + '..' + (s.surf + 2) + ' ' + exN(s.val));
+    });
+    exSolveWarn(SV, warn);
     if (M.cfgs.length > 1) {
       L.push('ZOO   ' + M.cfgs.length, 'ZOO   TIT');
       M.cfgs.forEach(function (c, ci) { L.push('TIT   Z' + (ci + 1) + ' "' + (exAscii(c.title) || 'Z' + (ci + 1)) + '"'); });
       wrap('ZOO   EPD', M.cfgs.map(function (c) { return exN(c.epd); }));
       wrap('ZOO   THI S0', M.cfgs.map(function (c) { return isFinite(c.obj) ? exN(c.obj) : '0.1e11'; }));
-      exVary(M, 'T').forEach(function (i) { wrap('ZOO   THI S' + (i + 1), M.cfgs.map(function (c) { return exN(exBfl(M, c, i)); })); });
+      exVary(M, 'T').forEach(function (i) { if (!svAt[i]) wrap('ZOO   THI S' + (i + 1), M.cfgs.map(function (c) { return exN(exBfl(M, c, i)); })); });
       exVary(M, 'R').forEach(function (i) { wrap('ZOO   RDY S' + (i + 1), M.cfgs.map(function (c) { return exN(c.R[i] || 0); })); });
       if (M.cfgs.some(function (c) { return c.vig; }))
         ['vuy', 'vly', 'vux', 'vlx'].forEach(function (k) {
