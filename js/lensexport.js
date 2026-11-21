@@ -72,7 +72,7 @@ var LENSEXPORT = (function () {
   function exVig(X, ci, fr) {
     var A = X.vigAuto && X.vigAuto[ci];
     if (A && A.f && A.vuy && A.f.length === A.vuy.length) return exInterp(A.f, A, fr);
-    var c = X.cfgs && X.cfgs[ci], v = c && c.vig, H = X.vigH;
+    var c = X.cfgs && X.cfgs[ci], v = c && c.vig, H = (c && c.vigH) || X.vigH;   // 按结构改视场的镜头用结构自己的视场表
     if (v && v.vuy && H && H.length === v.vuy.length) {
       var hm = Math.max.apply(null, H.map(function (h) { return Math.abs(h) || 0; })) || 1;
       return exInterp(H.map(function (h) { return Math.abs(h) / hm; }),
@@ -103,9 +103,14 @@ var LENSEXPORT = (function () {
       var obj = isCur ? st.objd : (c.obj == null ? Infinity : c.obj), fno = isCur || c.fno == null ? st.fno : c.fno;
       var S2 = S.map(function (s, i) { return (T[i] === s.T && R[i] === s.R) ? s : Object.assign({}, s, { T: T[i], R: R[i] }); });
       var sys = OPT.buildSystem(S2, Object.assign({}, opt, { fno: fno, epd: fno, objDist: obj }));
-      return { title: (c && c.title) || name, T: T, R: R, obj: sys.objDist, fno: fno, epd: sys.epd, vig: exVig(X, cs ? ci : X.cfg, fr) };
+      // 最大视场：当前结构按页面上的；其他结构有自己的（按结构改视场的镜头）就用自己的，否则同页面
+      var fovC = (isCur || !c || c.fov == null) ? st.fov : +c.fov;
+      return { title: (c && c.title) || name, T: T, R: R, obj: sys.objDist, fno: fno, epd: sys.epd, vig: exVig(X, cs ? ci : X.cfg, fr),
+               fv: fr.map(function (f) { return +(f * fovC).toPrecision(12); }) };
     });
-    return { name: name, S: S, n: n, st: st, opt: opt, fr: fr, fv: fr.map(function (f) { return +(f * st.fov).toPrecision(12); }),
+    // 基准视场表（YFLN / YRI）= 第 1 个结构的；fvVary = 各结构视场不全相同，要逐结构写（Zemax YFIE / CODE V ZOO YRI）
+    var fvVary = cfgs.some(function (c) { return c.fv.some(function (v, f) { return Math.abs(v - cfgs[0].fv[f]) > 1e-9; }); });
+    return { name: name, S: S, n: n, st: st, opt: opt, fr: fr, fv: cfgs[0].fv, fvVary: fvVary,
              cfgs: cfgs, gl: exGlasses(st.tx, S), defoc: opt.defocus || 0, warn: warn,
              sdAp: X.sdAp && X.sdAp.length === n ? X.sdAp : null };
   }
@@ -205,6 +210,9 @@ var LENSEXPORT = (function () {
       exVary(M, 'T').forEach(function (i) { if (!svAt[i]) mce('THIC', i + 1, M.cfgs.map(function (c) { return exN(exBfl(M, c, i)); })); });
       exVary(M, 'R').forEach(function (i) { mce('CRVT', i + 1, M.cfgs.map(function (c) { return c.R[i] ? exN(1 / c.R[i]) : '0'; })); });
       if (!floa) mce('APER', 0, M.cfgs.map(function (c) { return exN(apVal(c)); }));
+      if (M.fvVary) M.fv.forEach(function (_, f) {
+        if (M.cfgs.some(function (c) { return Math.abs(c.fv[f] - M.fv[f]) > 1e-9; })) mce('YFIE', f + 1, M.cfgs.map(function (c) { return exN(c.fv[f]); }));
+      });
       ['FVDX', 'FVDY', 'FVCX', 'FVCY'].forEach(function (op) {
         M.fv.forEach(function (_, f) {
           var vals = M.cfgs.map(function (c) { return vz(c, op.slice(1), f); });
@@ -346,6 +354,10 @@ var LENSEXPORT = (function () {
       wrap('ZOO   THI S0', M.cfgs.map(function (c) { return isFinite(c.obj) ? exN(c.obj) : '0.1e11'; }));
       exVary(M, 'T').forEach(function (i) { if (!svAt[i]) wrap('ZOO   THI S' + (i + 1), M.cfgs.map(function (c) { return exN(exBfl(M, c, i)); })); });
       exVary(M, 'R').forEach(function (i) { wrap('ZOO   RDY S' + (i + 1), M.cfgs.map(function (c) { return exN(c.R[i] || 0); })); });
+      if (M.fvVary) M.fv.forEach(function (_, f) {
+        if (M.cfgs.some(function (c) { return Math.abs(c.fv[f] - M.fv[f]) > 1e-9; }))
+          wrap('ZOO   ' + (ang ? 'YAN' : 'YRI') + ' F' + (f + 1), M.cfgs.map(function (c) { return exN(c.fv[f]); }));
+      });
       if (M.cfgs.some(function (c) { return c.vig; }))
         ['vuy', 'vly', 'vux', 'vlx'].forEach(function (k) {
           M.fv.forEach(function (_, f) { wrap('ZOO   ' + k.toUpperCase() + ' F' + (f + 1), M.cfgs.map(function (c) { return exN(c.vig ? c.vig[k][f] : 0); })); });

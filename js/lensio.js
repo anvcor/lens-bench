@@ -128,6 +128,10 @@ var LENSIO = (function () {
           o.zoo[a] = o.zoo[a] || {};
           o.zoo[a][parseInt(mF[1], 10) - 1] = vals;                // 键是视场序号 0 起
         }
+        if (mF && (a === 'YIM' || a === 'YRI' || a === 'YAN')) {   // 按结构改视场（同 Zemax 的 YFIE）
+          o.zoo.FLDF = o.zoo.FLDF || {};
+          o.zoo.FLDF[parseInt(mF[1], 10) - 1] = vals.map(Math.abs);
+        }
         return;
       }
       vals = tk.slice(2).map(num);
@@ -359,7 +363,7 @@ var LENSIO = (function () {
       else if (k === 'PWAV') pwav = +tk[1];
       else if (k === 'MNUM') mnum = +tk[1];
       else if (k === 'LTTL') { var m = /"([^"]*)"/.exec(ln); ltt[+tk[2]] = m ? m[1] : ('Z' + tk[2]); }
-      else if (/^(THIC|APER|CRVT|GLSS|FVCY|FVDY|FVCX|FVDX|FVAN|PRAM|SDIA)$/.test(k)) {
+      else if (/^(THIC|APER|CRVT|GLSS|FVCY|FVDY|FVCX|FVDX|FVAN|PRAM|SDIA|YFIE|XFIE)$/.test(k)) {
         var q = /"([^"]*)"/.exec(ln);
         mce.push({ op: k, p: +tk[1], c: +tk[2], v: num(tk[3]), s: q ? q[1] : '' });
       }
@@ -575,10 +579,25 @@ var LENSIO = (function () {
           (z._fv = z._fv || {});
           (z._fv[e.op] = z._fv[e.op] || {});
           (z._fv[e.op][e.p - 1] = z._fv[e.op][e.p - 1] || [])[ci] = e.v;
+        } else if (e.op === 'YFIE') {               // p = Zemax 视场号（1 起，文件原顺序）
+          (z._yf = z._yf || {});
+          (z._yf[e.p - 1] = z._yf[e.p - 1] || [])[ci] = Math.abs(e.v);
+        } else if (e.op === 'XFIE') {
+          if (e.v) z._xf = true;
         } else if (e.op === 'GLSS') {
           out.warn.push('多重结构里有换玻璃 (GLSS 面 ' + e.p + ')，本页只跟随厚度 / 曲率 / F/# / 渐晕，玻璃保持第 1 结构。');
         }
       });
+      if (z._xf) out.warn.push('多重结构里按结构改了 X 视场 (XFIE)，本页只算 Y 视场。');
+      delete z._xf;
+      // 按结构改的 Y 视场（YFIE）：靠软件校正畸变的变焦，广角端光学像圈小于画幅，文件就这样缩视场。
+      // 换成「各结构的视场表」，和 out.fields 同样按基准视场由小到大排
+      if (z._yf) {
+        z.FLD = [];
+        for (var c2 = 0; c2 < mnum; c2++)
+          z.FLD[c2] = idx.map(function (p) { var t = z._yf[p]; return (t && t[c2] != null) ? t[c2] : Math.abs(yfln[p] || 0); });
+        delete z._yf;
+      }
       // FVxx 也换算成 VUY/VLY/VUX/VLX，并按视场重排
       if (z._fv) {
         ['VUY', 'VLY', 'VUX', 'VLX'].forEach(function (key) { z[key] = {}; });
@@ -705,6 +724,17 @@ var LENSIO = (function () {
       if (c.obj === null && sq.objDist != null) c.obj = sq.objDist;
       if (c.obj === null || !(c.obj < 1e7)) c.obj = Infinity;   // 1e10/1e13/1e15 这类写法都是无限远
       list.push(c);
+    }
+    /* 按结构改的视场（Zemax YFIE / CODE V ZOO YIM·YRI·YAN）：只要有一个结构和基准视场表不同，
+       每个结构都写上自己的 fov（最大视场）和 vigH（视场表，渐晕系数按它对应），切结构时整套跟着换。
+       没有按结构改视场的镜头不写这两项，记录和原来逐字节相同。 */
+    var F0 = sq.fields || [], FL = [];
+    if (F0.length && (z.FLD || z.FLDF)) {
+      for (i = 0; i < n; i++)
+        FL[i] = z.FLD ? z.FLD[i].slice()
+          : F0.map(function (v, fi) { var t = z.FLDF[fi]; return (t && t[i] != null) ? t[i] : v; });
+      var differ = FL.some(function (fl) { return fl.some(function (v, fi) { return Math.abs(v - F0[fi]) > 1e-9; }); });
+      if (differ) list.forEach(function (c, ci) { c.fov = FL[ci][FL[ci].length - 1]; c.vigH = FL[ci]; });
     }
     return list;
   }

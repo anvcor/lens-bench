@@ -371,6 +371,9 @@
     Object.keys(c.thi).forEach(function (k) { if (state.rows[k]) state.rows[k].T = String(c.thi[k]); });
     Object.keys(c.rdy).forEach(function (k) { if (state.rows[k]) state.rows[k].R = (c.rdy[k] === 0 ? 'inf' : String(c.rdy[k])); });
     if (c.fno != null) $('fno').value = c.fno;
+    // 按结构改视场的镜头（广角端像圈小于画幅的变焦）：最大视场和渐晕系数对应的视场表跟着结构换
+    if (c.fov != null) $('fov').value = c.fov;
+    if (c.vigH) state.vigH = c.vigH.slice();
     $('objd').value = fmtObjDist(c.obj == null ? Infinity : c.obj);   // JSON 里 Infinity 会变成 null
     var oc = $('ldeObjd'); if (oc) oc.value = $('objd').value;
   }
@@ -2088,7 +2091,7 @@
     var c = L.cfgs && L.cfgs[ci], nr = textToRows(L.tx).length, D = {};
     D.apmode = L.apmode || 'fno'; D.aim = !!L.aim; D.fmode = L.fmode || 'angle';
     D.fno = (c && c.fno != null) ? +c.fno : +L.fno;
-    D.fov = +L.fov;
+    D.fov = (c && c.fov != null) ? +c.fov : +L.fov;
     D.freqs = parseList(L.freqs || '10, 30, 80', [10, 30, 80]).filter(function (v) { return v > 0; }).slice(0, 4);
     D.objd = c ? (c.obj == null ? Infinity : c.obj) : (L.objd != null ? L.objd : Infinity);
     D.stop = Math.min(Math.max((L.stop || 1) - 1, 0), nr - 1) + 1;
@@ -2870,6 +2873,22 @@
     if (p >= x[n - 1]) j = n - 2; else if (p > x[0]) while (j < n - 2 && p > x[j + 1]) j++;
     return { a: j, b: j + 1, w: Math.min(1, Math.max(0, (p - x[j]) / (x[j + 1] - x[j]))) };
   }
+  /* 按结构改视场的变焦（广角端像圈小于画幅）：焦段之间的最大像高和视场表按两侧文件焦段线性插值（权重同变焦插值），
+     写进控件和当前结构；没有按结构改视场的镜头返回空串、什么都不动 */
+  function zoomField(zm, p) {
+    var cs = state.cfgs0; if (!cs || !zm || zm.why) return '';
+    var nb = zoomNb(zm, p), A = cs[zm.nodes[nb.a].i], B = cs[zm.nodes[nb.b].i];
+    if (!A || !B || A.fov == null || B.fov == null) return '';
+    var w = nb.w, fov = +(A.fov + w * (B.fov - A.fov)).toFixed(4);
+    var vH = (A.vigH && B.vigH && A.vigH.length === B.vigH.length)
+      ? A.vigH.map(function (h, i) { return +(h + w * (B.vigH[i] - h)).toFixed(6); }) : null;
+    var old = +$('fov').value, cfg = state.cfgs && state.cfgs[state.cfg];
+    $('fov').value = fov; if (vH) state.vigH = vH;
+    if (cfg) { cfg.fov = fov; if (vH) cfg.vigH = vH; }
+    if (Math.abs(old - fov) < 1e-6) return '';
+    return '最大' + ($('fmode').value === 'angle' ? '视场 ' : '像高 ') + (+old.toFixed(3)) + ' → ' + fov +
+      '（文件按焦段缩小了视场：广角端光学像圈小于画幅，靠机内软件校正畸变；焦段之间按两侧插值）。';
+  }
   function zoomDelta(zm, p, u) {                // 当前焦段的对焦位移：两侧焦段的对焦凸轮按凸轮参数加权
     var nb = zoomNb(zm, p), A = zm.nodes[nb.a].cam, B = zm.nodes[nb.b].cam, d = {};
     var dl = function (cam, k) { var q = cam.surf.indexOf(k); return q < 0 ? 0 : camAt(cam, u)[q] - camAt(cam, 0)[q]; };
@@ -3056,6 +3075,7 @@
           : '⚠ 为了把插值带来的离焦对回来，对焦群走过了文件对焦行程的无限远端，说明这里插出来的镜组位置偏得不小。') : '');
     }
     if (fnoNew != null) { $('fno').value = +fnoNew.toFixed(4); if (cfg) cfg.fno = +fnoNew.toFixed(4); }
+    var fovTxt = zoomField(zm, p);
     // 渐晕跟着焦段走
     var vigTxt = '';
     if (state.vigAuto && state.vigAuto[state.cfg]) {
@@ -3072,6 +3092,7 @@
       cfg.vig = vigLerp(state.cfgs0[A.i].vig, state.cfgs0[B.i].vig, nb.w);
       vigTxt = '文件的渐晕系数按两侧焦段插值。';
     }
+    vigTxt = fovTxt + vigTxt;
     var eflF = Math.abs(OPT.buildSystem(surF, optZ).efl), fin = finD;
     PENDMSG.push('变焦到 ' + fmt(f, 2) + ' mm：' + clampTxt +
       (atNode ? '正好是文件里的焦段 ' + nodeName(zm, nodeQ) + '，用的是原始数据' + (finD ? '。' : '，无限远不用再对焦。')
@@ -3265,7 +3286,8 @@
     var fnoTxt = camFno(P, S0, A.F, f);
     var optZ = Object.assign({}, cur.opt, { fno: +$('fno').value });
     var gF = {}; P.keys.forEach(function (k) { gF[k] = parseFloat(state.rows[k].T); });
-    var surF = withT(cur.surfaces, gF), vigTxt = camVig(optZ, surF);
+    var zmF = zoomModelNow(), fovTxt = (zmF && !zmF.why) ? zoomField(zmF, x) : '';
+    var surF = withT(cur.surfaces, gF), vigTxt = fovTxt + camVig(optZ, surF);
     var eflF = Math.abs(OPT.buildSystem(surF, optZ).efl);
     PENDMSG.push('变焦到 ' + fmt(f, 2) + ' mm（' + camSrcTxt(P.C) + '）：' + clampTxt +
       (ang != null ? '变焦环 ' + fmt(ang, 1) + '°' + (P.C.rot ? ' / ' + P.C.rot + '°' : '') + '，' : '') +
@@ -3311,8 +3333,13 @@
     var inf = function (c) { var D = c.obj; return D == null || !isFinite(D) || D <= 0 || D >= 1e7; };
     var cfs = (state.cfgs0 && state.cfgs0.length && state.T0 && state.T0.length === sur.length) ? state.cfgs0.filter(inf) : [];
     var one = function (gm, name) {
-      var s = withT(sur, gm), f = Math.abs(OPT.buildSystem(s, optInf).efl), Z = camGaps(P, camClampX(P, -1 / f));
-      var d = Math.max.apply(null, P.keys.map(function (k) { return Math.abs(Z[k] - s[k].T); }));
+      var s = withT(sur, gm), f = Math.abs(OPT.buildSystem(s, optInf).efl);
+      var dev = function (ff) { var Z = camGaps(P, camClampX(P, -1 / ff)); return Math.max.apply(null, P.keys.map(function (k) { return Math.abs(Z[k] - s[k].T); })); };
+      var d = dev(f);
+      // 结构标题里写了凸轮上的焦距（f=…mm）就也按它对一次：凸轮按 CODE V 的 EFL 记焦距，玻璃折射率稍有出入时
+      // 长焦端 EFL 差万分之几，按本页 EFL 插值会被放大成几十 µm（同 tools/camattach.js）
+      var ft = +((String(name || '').match(/f=([\d.]+)\s*mm/) || [])[1]);
+      if (ft > 0) d = Math.min(d, dev(ft));
       worst = Math.max(worst, d); chk.push(name + ' ' + fmt(f, 2) + ' mm 差 ' + (d * 1000).toFixed(1) + ' µm');
     };
     if (cfs.length) cfs.forEach(function (c) { var gm = {}; P.keys.forEach(function (k) { gm[k] = c.thi && c.thi[k] != null ? +c.thi[k] : state.T0[k]; }); one(gm, c.title); });
@@ -4019,8 +4046,10 @@
     var hgt = (L.fmode || 'height') === 'height';
     var vsrc = (c && c.vig) || null;
     var lam = opt.lambdas[opt.primary].nm / 1000;
-    if (vsrc && vsrc.vuy && L.vigH && L.vigH.length === vsrc.vuy.length) {
-      sys.vig = { th: L.vigH.map(function (h) { return hgt ? OPT.angleForHeight(sys, h, lam) : h; }),
+    // 按结构改视场的镜头：最大视场和渐晕表的视场都按这个结构自己的
+    var fovC = (c && c.fov != null) ? +c.fov : L.fov, vigHC = (c && c.vigH) || L.vigH;
+    if (vsrc && vsrc.vuy && vigHC && vigHC.length === vsrc.vuy.length) {
+      sys.vig = { th: vigHC.map(function (h) { return hgt ? OPT.angleForHeight(sys, h, lam) : h; }),
                   vuy: vsrc.vuy, vly: vsrc.vly || vsrc.vuy,
                   vux: vsrc.vux || vsrc.vuy, vlx: vsrc.vlx || vsrc.vux || vsrc.vuy };
     }
@@ -4029,7 +4058,7 @@
     var vAuto = (!(S && S.vigFile)) && L.vigAuto && L.vigAuto[ci];
     if (vAuto && vAuto.f && vAuto.f.length === vAuto.vuy.length) {
       sys.vig = { th: vAuto.f.map(function (q) {
-                    return hgt ? OPT.angleForHeight(sys, L.fov * q, lam) : L.fov * q;
+                    return hgt ? OPT.angleForHeight(sys, fovC * q, lam) : fovC * q;
                   }),
                   vuy: vAuto.vuy, vly: vAuto.vly, vux: vAuto.vux, vlx: vAuto.vlx, auto: 1 };
     }
@@ -4037,12 +4066,12 @@
     if (hgt) {
       var mk = function (n) {
         var o = [];
-        for (var q = 0; q < n; q++) o.push(n === 1 ? 0 : OPT.angleForHeight(sys, L.fov * q / (n - 1), lam));
+        for (var q = 0; q < n; q++) o.push(n === 1 ? 0 : OPT.angleForHeight(sys, fovC * q / (n - 1), lam));
         return o;
       };
       opt.fieldsMTF = mk(opt.nField); opt.fieldsViz = mk(opt.nFieldViz);
       opt.maxFov = opt.fieldsMTF[opt.fieldsMTF.length - 1];
-    } else { opt.fieldsMTF = null; opt.fieldsViz = null; opt.maxFov = L.fov; }
+    } else { opt.fieldsMTF = null; opt.fieldsViz = null; opt.maxFov = fovC; }
     opt.fieldsFan = [];
     for (var qf = 0; qf < NFAN; qf++) opt.fieldsFan.push(opt.maxFov * qf / (NFAN - 1));
     return sys;
@@ -4079,7 +4108,7 @@
       // 光线瞄准必须跟着镜头走：渐晕表的归一化瞳坐标是在光阑面上定义的，
       // 这里写死不瞄准的话，表和坐标对不上，边缘视场的 MTF 会明显偏
       apertureMode: L.apmode || 'fno', fno: fno, epd: fno, rayAiming: L.aim !== false,
-      maxFov: L.fov, defocus: 0, nGrid: S.ngrid, nField: S.nfield,
+      maxFov: (c && c.fov != null) ? +c.fov : L.fov, defocus: 0, nGrid: S.ngrid, nField: S.nfield,
       freqs: S.freqs, nRayViz: 3, nFieldViz: 3, colorBy: 'field', mtfMode: S.mode, objDist: objd,
       sdDraw: L.sdDraw || null, sdAp: L.sdAp || null
     };
